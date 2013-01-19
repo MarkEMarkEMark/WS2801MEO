@@ -21,3 +21,6 @@ In order to get this running, I had to remove the Timer1 interrupt call (Ownedel
 I also had to alter a few SPI code lines, and also change all the flash memory stuff to Byte. There are not that many changes, but it took a lot of trial and error to get to this point.
 
 I've tried it up to 240 frames per second without breaking a sweat (but it's too fast, so put it back to 60)
+
+Now includes 3 new complex programs: Random Strobe / Simplex Noise (based on happyinmontion's) / Color Phasing
+Also includes elmerfud's Larson scanner and pulse
