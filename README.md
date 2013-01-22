@@ -24,3 +24,9 @@ I've tried it up to 240 frames per second without breaking a sweat (but it's too
 
 Now includes 3 new complex programs: Random Strobe / Simplex Noise (based on happyinmontion's) / Color Phasing
 Also includes elmerfud's Larson scanner and pulse
+
+The 'hsv2rgb' function has been update to allow 'color lines' as well as the default color wheel. That is, Blue -> Magenta -> Red -> Magenta -> Blue, for example.
+
+There is a bog standard 'chaser' function , but to keep it interesting, rather than doing the usual Red/Green/Blue type chases, I have opted for color schemes based on the color wheel (e.g. 30 degrees either side of main color). Whilst the color wheel isn't a true color wheel, the color schemes are still pleasing. (Chase function based on DigitalMisery's work)
+
+There is a fire pattern based on Christopher De Vries code. I hope to improve this with interpolation in the future.
