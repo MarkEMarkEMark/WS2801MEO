@@ -5,10 +5,10 @@ Programmed for the Due - so 100+ bulbs and fast frame rates now possible! */
 	- Frame rate controlled by potentiometer
 	- buttons to change programs / variations / choose random / switch off
 
+	- See if can replace fade table with GetQuadraticLevel function
+
 
 /* ToDo: Patterns Ideas
-
-- Random strobe, but with larson fade levels
 
 - Standard old fashioned lights twinkle. A random 25% fade on in 2 seconds, and stay of for 10 seconds and then fade off
 
@@ -18,6 +18,17 @@ Programmed for the Due - so 100+ bulbs and fast frame rates now possible! */
 - various from: https://www.youtube.com/watch?v=zMKf98MpaUg / http://www.youtube.com/watch?v=w557LuVueXg&feature=player_embedded
 
 - flames (flag?? R/Y)
+
+- whites
+    r = 255; g = 147; b = 41; //-CANDLE - 1900
+    r = 255; g = 197; b = 143; //-40W TUNG - 2600
+    r = 255; g = 214; b = 170; //-100W TUNG - 2850
+    r = 255; g = 241; b = 224; //-HALOGEN - 3200
+    r = 255; g = 250; b = 244; //-CARBON ARC - 5200
+    r = 255; g = 255; b = 251; //-HIGH NOON SUN - 5400
+    r = 255; g = 255; b = 255; //-DIRECT SUN - 6000
+    r = 201; g = 226; b = 255; //-OVERCAST SKY - 7000
+    r = 64; g = 156; b = 255; //-CLEAR BLUE SKY - 20000 
 
 */
 
@@ -68,9 +79,23 @@ some future expansion if I'm ever foolish enough to attempt that. */
 
 #define pgm_read_byte(x) (*(x))
 #define NUM_PIXELS 100
-#define FRAMES_PER_SECOND 100
+#define FRAMES_PER_SECOND 60
 #define FADE_FRAMES 256   //number of frames to crossfade within
-#define STAY_FRAMES 1024 //number of frames to show a program - if multiple of half num pixels, then some programs won't run into each other (eg random strobe fade)
+#define STAY_FRAMES 2048 //number of frames to show a program - if multiple of half num pixels, then some programs won't run into each other (eg random strobe fade)
+
+// Simplex Noise
+//(inspired by happyinmotion: http://happyinmotion.livejournal.com/278357.html)
+// Simplex noise for whole strip of LEDs.
+// (Well, it's simplex noise for 6 nodes and cubic interpolation between those nodes.)
+#define onethird 0.333333333
+#define onesixth 0.166666667
+#define numSpacing 10 //was 4
+#define FULL_ONE_MINUS 255 //level range
+
+int ii, jj, kk, AA[] = {0, 0, 0};
+float uu, vv, ww, ss;
+int TT[] = {0x15, 0x38, 0x32, 0x2c, 0x0d, 0x13, 0x07, 0x2a};
+
 
 //	Arduino Due Timer code by Sebastian Vik & cmaglie
 //		example: startTimer(TC1, 0, TC3_IRQn, 40)
@@ -145,6 +170,8 @@ void ProgramChaser(byte idx);			//MEO & Paul Martis
 void ProgramFlames(byte idx);			//MEO & By Christopher De Vries
 void ProgramLarsonScanner(byte idx);	//MEO
 void ProgramStrobeFade(byte idx);		//MEO
+void ProgramOldFashioned(byte idx);		//MEO
+void ProgramRotatingCircles(byte idx);  //MEO
 
 // Chaser functions
 void SetChaserColor(uint8_t bulb, long color, byte idx);
@@ -170,7 +197,7 @@ void (*renderEffect[])(byte) = {
 	//ProgramSolidColor},
 	ProgramRotatingRainbow,
 	ProgramSineWave, //affected by fixSin/fixCos issue - temp fixed by using proper Sin
-	ProgramWavyFlag, //affected by fixSin/fixCos issue
+	ProgramWavyFlag, //affected by fixSin/fixCos issue -temp fixed by using proper Cos
 	//ProgramPulse,
 	ProgramPhasing,
 	ProgramSimplexNoise,
@@ -178,6 +205,8 @@ void (*renderEffect[])(byte) = {
 	ProgramFlames,
 	ProgramChaser,
 	ProgramLarsonScanner,
+	ProgramOldFashioned,
+	ProgramRotatingCircles,
 	ProgramStrobeFade},
 	(*renderAlpha[])(void)  = {
 		//crossfadeDither,
@@ -211,6 +240,12 @@ void setup() {
 
 	//Timer function re-written for Ardunino Due
 	//startTimer(TC1, 0, TC3_IRQn, FRAMES_PER_SECOND);
+
+	//for (int i= 0; i <21;i++ )
+	//{
+	//	Serial.println(GetQuadraticLevel(i, 21, true));
+	//}
+
 }
 
 void loop() {
@@ -394,72 +429,50 @@ void ProgramSineWave(byte idx) {
 		// Frame-to-frame increment (speed) -- may be positive or negative,
 		// but magnitude shouldn't be so small as to be boring.  It's generally
 		// still less than a full pixel per frame, making motion very smooth.
-		fxIntVars[idx][3] = 2;//4 + random(fxIntVars[idx][1]) / NUM_PIXELS;
+		fxIntVars[idx][3] = 4 + random(fxIntVars[idx][1]) / NUM_PIXELS;
 		// Reverse direction half the time.
 		if(random(2) == 0) fxIntVars[idx][3] = -fxIntVars[idx][3];
 		fxIntVars[idx][4] = 0; // Current position
 		//ToDo: Rainbow changing sine
 		//ToDo: Rainbown spread across string sine
+		fxI8Vars[idx][0] = random(2) + 1; //number of half waves per string
+		fxI8Vars[idx][1] = random(2); //still colour or rainbow
+		fxI8Vars[idx][2] = random(4); //full rainbow or lines
+		fxI32Vars[idx][0] = 0; //start of rainbow
+
 		fxIntVars[idx][0] = 1; // Effect initialized
 	}
 
 	byte *ptr = &imgData[idx][0];
 	int  foo;
 	long color, i;
-	
-	//test non-advanced version, as advanced version doesn't do black very well. >>
-	byte r, g, b, rMain, gMain, bMain, rHi, gHi, bHi, rLo, gLo, bLo;
-	long colorMain, colorHi, colorLo;
-	colorMain = hsv2rgb(fxIntVars[idx][1], 255, 255, 0);
-	colorHi = hsv2rgb(fxIntVars[idx][1], 0, 255, 0); //white
-	colorLo = hsv2rgb(fxIntVars[idx][1], 0, 0, 0); //black
-	// Need to decompose colors into their r, g, b elements
-	rMain = (colorMain >> 16);
-	gMain = (colorMain >>  8);
-	bMain = colorMain;
-	rHi = (colorHi >> 16);
-	gHi = (colorHi >>  8);
-	bHi = colorHi;
-	rLo = (colorLo >> 16);
-	gLo = (colorLo >>  8);
-	bLo = colorLo; //<<<<
 	float y;
-	int wavesPerString;
-
 
 	for(long i=0; i<NUM_PIXELS; i++) {
-		/*// Peaks of sine wave are white, troughs are black, mid-range
-		// values are pure hue (100% saturated). >> Sine table way - need to fix
-		foo = fixSin(fxIntVars[idx][4] + fxIntVars[idx][2] * i / NUM_PIXELS);
+		// Peaks of sine wave are white, troughs are black, mid-range
+		// values are pure hue (100% saturated).
+		//>> Sine table way - need to fix
+		////foo = fixSin(fxIntVars[idx][4] + fxIntVars[idx][2] * i / NUM_PIXELS); //original 
+		/*foo = (int)(sin(fxIntVars[idx][4] + fxIntVars[idx][2] * i / NUM_PIXELS) * 255); //fix attempt - almost works
 		color = (foo >= 0) ?
 			hsv2rgb(fxIntVars[idx][1], 254 - (foo * 2), 255, 0) :
 				hsv2rgb(fxIntVars[idx][1], 255, 254 + foo * 2, 0);
 		*ptr++ = color >> 16; *ptr++ = color >> 8; *ptr++ = color;
-		//<<<< */
+		//<<<<*/
 
 		//>>> Non-Sine table way - slower, but works! Need fix for above
-		wavesPerString = 1;
-		y = sin(PI * wavesPerString * (float)(fxIntVars[idx][4] + i) / (float)NUM_PIXELS);
-		if(y >= 0.0)
-		{
-			// Peaks of sine wave are white
-			y  = 1.0 - y; // Translate Y to 0.0 (top) to 1.0 (center)
-			r = rHi - (byte)((float)(rHi - rMain) * y);
-			g = gHi - (byte)((float)(gHi - gMain) * y);
-			b = bHi - (byte)((float)(bHi - bMain) * y);
-		}
-		else
-		{
-			// Troughs of sine wave are black
-			y += 1.0; // Translate Y to 0.0 (bottom) to 1.0 (center)
-			r = rLo + (byte)((float)(rMain) * y);
-			g = gLo + (byte)((float)(gMain) * y);
-			b = bLo + (byte)((float)(bMain) * y);
-		}
-		*ptr++ = r; *ptr++ = g; *ptr++ = b;
-		//<<< 
+		y = sin(PI * (float)fxI8Vars[idx][0] * 0.5 * 
+			(float)(fxIntVars[idx][4] + (float)i) / (float)NUM_PIXELS) * 255.0;
+
+		color = (y >= 0.0) ?
+			// Peaks of sine wave are white (saturation = 0)
+			color = hsv2rgb(fxIntVars[idx][1]+(fxI32Vars[idx][0]*fxI8Vars[idx][1]), 255 - (int)y, 255, fxI8Vars[idx][2]) :
+				// troughs are black (level = 0)
+				color = hsv2rgb(fxIntVars[idx][1]+(fxI32Vars[idx][0]*fxI8Vars[idx][1]), 255, 255 + (int)y, fxI8Vars[idx][2]);
+		*ptr++ = color >> 16; *ptr++ = color >> 8; *ptr++ = color;
 	}
 	fxIntVars[idx][4] += fxIntVars[idx][3];
+	fxI32Vars[idx][0]++;
 }
 
 // Data for American-flag-like colors (20 pixels representing
@@ -471,6 +484,13 @@ void ProgramSineWave(byte idx) {
 #define C_RED   160,   0,   0
 #define C_WHITE 255, 255, 255
 #define C_BLUE    0,   0, 100
+
+//flame effect version - RED/ORANGE - ORANGE/YELLOW
+//#define C_RED   255,   127,   0
+//#define C_WHITE 255, 64, 00
+//#define C_BLUE    255,   0, 0
+
+
 byte flagTable[]  = {
 	C_BLUE , C_WHITE, C_BLUE , C_WHITE, C_BLUE , C_WHITE, C_BLUE,
 	C_RED  , C_WHITE, C_RED  , C_WHITE, C_RED  , C_WHITE, C_RED ,
@@ -485,35 +505,51 @@ void ProgramWavyFlag(byte idx) {
 		fxIntVars[idx][2] = 1;//4 + random(10);    // Wave speed
 		fxIntVars[idx][3] = 200 + random(200); // Wave 'puckeryness'
 		fxIntVars[idx][4] = 0;                 // Current  position
+		
+		frameDelay[idx] = 6; //delay frame count
+		frame[idx] = 0; //delay frame
+
 		fxIntVars[idx][0] = 1;                 // Effect initialized
 	}
-	for(sum=0, i=0; i<NUM_PIXELS-1; i++) {
-		sum += fxIntVars[idx][3] + fixCos(fxIntVars[idx][4] + fxIntVars[idx][1] *
-			i / NUM_PIXELS);
-	}
 
-	byte *ptr = &imgData[idx][0];
-	for(s=0, i=0; i<NUM_PIXELS; i++) {
-		x = 256L * ((sizeof(flagTable) / 3) - 1) * s / sum;
-		idx1 =  (x >> 8)      * 3;
-		idx2 = ((x >> 8) + 1) * 3;
-		b    = (x & 255) + 1;
-		a    = 257 - b;
-		*ptr++ = ((pgm_read_byte(&flagTable[idx1    ]) * a) +
-			(pgm_read_byte(&flagTable[idx2    ]) * b)) >> 8;
-		*ptr++ = ((pgm_read_byte(&flagTable[idx1 + 1]) * a) +
-			(pgm_read_byte(&flagTable[idx2 + 1]) * b)) >> 8;
-		*ptr++ = ((pgm_read_byte(&flagTable[idx1 + 2]) * a) +
-			(pgm_read_byte(&flagTable[idx2 + 2]) * b)) >> 8;
-		s += fxIntVars[idx][3] + fixCos(fxIntVars[idx][4] + fxIntVars[idx][1] *
-			i / NUM_PIXELS);
-	}
+	if (frame[idx] == frameDelay[idx]) { //only do once every delay frames
+		for(sum=0, i=0; i<NUM_PIXELS-1; i++) {
+			//sum += fxIntVars[idx][3] + fixCos(fxIntVars[idx][4] + fxIntVars[idx][1] *
+			//	i / NUM_PIXELS);
 
-	fxIntVars[idx][4] += fxIntVars[idx][2];
-	if(fxIntVars[idx][4] >= 720) fxIntVars[idx][4] -= 720;
+				sum += fxIntVars[idx][3] + (int)(cos((float)fxIntVars[idx][4] + (float)fxIntVars[idx][1] *
+				(float)i / (float)NUM_PIXELS) * 255.0);
+		}
+
+		byte *ptr = &imgData[idx][0];
+		for(s=0, i=0; i<NUM_PIXELS; i++) {
+			x = 256L * ((sizeof(flagTable) / 3) - 1) * s / sum;
+			idx1 =  (x >> 8)      * 3;
+			idx2 = ((x >> 8) + 1) * 3;
+			b    = (x & 255) + 1;
+			a    = 257 - b;
+
+			*ptr++ = ((pgm_read_byte(&flagTable[idx1    ]) * a) +
+				(pgm_read_byte(&flagTable[idx2    ]) * b)) >> 8;
+			*ptr++ = ((pgm_read_byte(&flagTable[idx1 + 1]) * a) +
+				(pgm_read_byte(&flagTable[idx2 + 1]) * b)) >> 8;
+			*ptr++ = ((pgm_read_byte(&flagTable[idx1 + 2]) * a) +
+				(pgm_read_byte(&flagTable[idx2 + 2]) * b)) >> 8;
+
+			//s += fxIntVars[idx][3] + fixCos(fxIntVars[idx][4] + fxIntVars[idx][1] *
+			//	i / NUM_PIXELS);
+			s += fxIntVars[idx][3] + (int)(cos((float)fxIntVars[idx][4] + (float)fxIntVars[idx][1] *
+				(float)i / (float)NUM_PIXELS) * 255.0);
+		}
+
+		fxIntVars[idx][4] += fxIntVars[idx][2];
+		if(fxIntVars[idx][4] >= 720) fxIntVars[idx][4] -= 720;
+
+		frame[idx] = 0;
+	} else {
+		frame[idx]++;
+	}
 }
-
-// TO DO: Add more effects here...Larson scanner, etc.
 
 // Pulse by elmerfud (http://forums.adafruit.com/viewtopic.php?f=47&t=29844&p=150244&hilit=advanced+belt#p150244)
 // "I added a ... simple one that picks a color and pulses the entire strip.
@@ -528,28 +564,39 @@ void ProgramPulse(byte idx) {
 		fxIntVars[idx][4] = fxIntVars[idx][1]; // pulse position 
 		fxIntVars[idx][5] = 1; // 0 = negative, 1 = positive
 		fxIntVars[idx][6] = 2 + random(10); // step value
+
+		frameDelay[idx] = 3; //delay frame count
+		frame[idx] = 0; //delay frame
+
 		fxIntVars[idx][0] = 1; // Effect initialized
 	}
 
 	byte *ptr = &imgData[idx][0];
 	long color, i;
-	for(i=0; i<NUM_PIXELS; i++) {
-		color = hsv2rgb(fxIntVars[idx][3], 255, fxIntVars[idx][4], 0);
-		*ptr++ = color >> 16; *ptr++ = color >> 8; *ptr++ = color;
-	}
 
-	if (fxIntVars[idx][5] == 0) {
-		fxIntVars[idx][4] = fxIntVars[idx][4] - fxIntVars[idx][6];
-		if (fxIntVars[idx][4] <= fxIntVars[idx][1]) {
-			fxIntVars[idx][5] = 1;
-			fxIntVars[idx][4] = fxIntVars[idx][1];
+	if (frame[idx] == frameDelay[idx]) { //only do once every delay frames
+		for(i=0; i<NUM_PIXELS; i++) {
+			color = hsv2rgb(fxIntVars[idx][3], 255, fxIntVars[idx][4], 0);
+			*ptr++ = color >> 16; *ptr++ = color >> 8; *ptr++ = color;
 		}
-	} else if (fxIntVars[idx][5] == 1) {
-		fxIntVars[idx][4] = fxIntVars[idx][4] + fxIntVars[idx][6];
-		if (fxIntVars[idx][4] >= fxIntVars[idx][2]) {
-			fxIntVars[idx][5] = 0;
-			fxIntVars[idx][4] = fxIntVars[idx][2];
+
+		if (fxIntVars[idx][5] == 0) {
+			fxIntVars[idx][4] = fxIntVars[idx][4] - fxIntVars[idx][6];
+			if (fxIntVars[idx][4] <= fxIntVars[idx][1]) {
+				fxIntVars[idx][5] = 1;
+				fxIntVars[idx][4] = fxIntVars[idx][1];
+			}
+		} else if (fxIntVars[idx][5] == 1) {
+			fxIntVars[idx][4] = fxIntVars[idx][4] + fxIntVars[idx][6];
+			if (fxIntVars[idx][4] >= fxIntVars[idx][2]) {
+				fxIntVars[idx][5] = 0;
+				fxIntVars[idx][4] = fxIntVars[idx][2];
+			}
 		}
+
+		frame[idx] = 0;
+	} else {
+		frame[idx]++;
 	}
 }
 
@@ -569,6 +616,7 @@ void ProgramFlames(byte idx){
 		fxIntVars[idx][9] = 255; //Colour 2 R
 		fxIntVars[idx][10] = 145; //Colour 2 G
 		fxIntVars[idx][11] = 0; //Colour 2 B
+
 		frameDelay[idx] = 4; //delay frame count
 		frame[idx] = 0; //delay frame
 
@@ -1082,20 +1130,6 @@ void ProgramRandomStrobe(byte idx) {
 //srand(myBulbs[0]); //re-seed for next time
 ////// <<<
 
-
-// Simplex Noise
-//(inspired by happyinmotion: http://happyinmotion.livejournal.com/278357.html)
-// Simplex noise for whole strip of LEDs.
-// (Well, it's simplex noise for 6 nodes and cubic interpolation between those nodes.)
-#define onethird 0.333333333
-#define onesixth 0.166666667
-#define numSpacing 10 //was 4
-#define FULL_ONE_MINUS 255 //level range
-
-int ii, jj, kk, AA[] = {0, 0, 0};
-float uu, vv, ww, ss;
-int TT[] = {0x15, 0x38, 0x32, 0x2c, 0x0d, 0x13, 0x07, 0x2a};
-
 void ProgramSimplexNoise(byte idx) {
 	if(fxIntVars[idx][0] == 0) {
 		fxIntVars[idx][1] = random(7); //sub pattern/variation
@@ -1204,8 +1238,8 @@ void ProgramSimplexNoise(byte idx) {
 	// Convert values from raw noise to scaled r,g,b and feed to strip
 	for (int i = 0; i < NUM_PIXELS; i++)
 	{
-		int r = int(bulbArray_red[i]*921 + 2); //was 403 +16: for 127 levels
-		int g = int(bulbArray_green[i]*921 + 2);
+		int r = int(bulbArray_red[i]*921 + 2); //was 403 + 16: for 127 to -127 levels
+		int g = int(bulbArray_green[i]*921 + 2); //921 + 2: for 255 to -255 levels
 		int b = int(bulbArray_blue[i]*921 + 2);
 
 		if (r > FULL_ONE_MINUS)
@@ -1353,13 +1387,13 @@ void ProgramLarsonScanner(byte idx){
 			} else {
 				offset = i - fxI32Vars[idx][0]; //(NUM_PIXELS + i - fxI32Vars[idx][0]) % NUM_PIXELS;
 			}
-			//color = hsv2rgb(fxIntVars[idx][1], 255, GetSmoothFade(offset), 0);
+			//color = hsv2rgb(fxIntVars[idx][1], 255, GetSmoothFade27(offset), 0);
 
 			if (fxI8Vars[idx][2] == 1) { //rainbow
 				color = hsv2rgb(fxIntVars[idx][3] + fxIntVars[idx][1] 
-					* i / NUM_PIXELS, 255, GetSmoothFade(offset), fxI8Vars[idx][1]);
+					* i / NUM_PIXELS, 255, GetSmoothFade27(offset), fxI8Vars[idx][1]);
 			} else { //fixed color
-				color = hsv2rgb(fxIntVars[idx][1], 255, GetSmoothFade(offset), 0);
+				color = hsv2rgb(fxIntVars[idx][1], 255, GetSmoothFade27(offset), 0);
 			}
 			*ptr++ = color >> 16; *ptr++ = color >> 8; *ptr++ = color;
 		}
@@ -1426,9 +1460,9 @@ void ProgramStrobeFade(byte idx){
 			offset = (NUM_PIXELS + fxI32Vars[idx][0] - getRandom(i, NUM_PIXELS)) % NUM_PIXELS;
 			if (fxI8Vars[idx][2] == 1) { //rainbow
 				color = hsv2rgb(fxIntVars[idx][3] + fxIntVars[idx][1] 
-					* i / NUM_PIXELS, 255, GetSmoothFade(offset), fxI8Vars[idx][1]);
+					* i / NUM_PIXELS, 255, GetSmoothFade27(offset), fxI8Vars[idx][1]);
 			} else { //fixed color
-				color = hsv2rgb(fxIntVars[idx][1], 255, GetSmoothFade(offset), 0);
+				color = hsv2rgb(fxIntVars[idx][1], 255, GetSmoothFade27(offset), 0);
 			}
 			*ptr++ = color >> 16; *ptr++ = color >> 8; *ptr++ = color;
 		}
@@ -1445,76 +1479,120 @@ void ProgramStrobeFade(byte idx){
 }
 
 
-// Simplex noise code:
-// From an original algorithm by Ken Perlin.
-// Returns a value in the range of about [-0.347 .. 0.347]
-float SNSimplexNoise(float x, float y, float z)
-{
-	// Skew input space to relative coordinate in simplex cell
-	ss = (x + y + z) * onethird;
-	ii = SNfastfloor(x+ss);
-	jj = SNfastfloor(y+ss);
-	kk = SNfastfloor(z+ss);
+// Fade in/out a random 20% of bulbs
+void ProgramOldFashioned(byte idx) {
+	if(fxIntVars[idx][0] == 0) {
+		fxIntVars[idx][1] = 20; // Number of bulbs at a time
+		fxIntVars[idx][2] = 120; // Frames to stay at full level
+		fxIntVars[idx][3] = random(1536); // Random hue
+		fxIntVars[idx][4] = 0; // fade position 
+		fxIntVars[idx][5] = 0; //frame count
+		fxIntVars[idx][6] = 0; //which bulbs at a time count
 
-	// Unskew cell origin back to (x, y , z) space
-	ss = (ii + jj + kk) * onesixth;
-	uu = x - ii + ss;
-	vv = y - jj + ss;
-	ww = z - kk + ss;;
+		frameDelay[idx] = 0; //delay frame count
+		frame[idx] = 0; //delay frame
 
-	AA[0] = AA[1] = AA[2] = 0;
+//ToDo: different colour each bulb / differet color each set / all white
 
-	// For 3D case, the simplex shape is a slightly irregular tetrahedron.
-	// Determine which simplex we're in
-	int hi = uu >= ww ? uu >= vv ? 0 : 1 : vv >= ww ? 1 : 2;
-	int lo = uu < ww ? uu < vv ? 0 : 1 : vv < ww ? 1 : 2;
+		fxIntVars[idx][0] = 1; // Effect initialized
+	}
 
-	return SNk_fn(hi) + SNk_fn(3 - hi - lo) + SNk_fn(lo) + SNk_fn(0);
+	byte *ptr = &imgData[idx][0];
+	long color, i, j, outLo, outHi, inLo, inHi;
+
+	if (frame[idx] == frameDelay[idx]) { //only do once every delay frames
+
+
+		for(i=0; i<NUM_PIXELS; i++) {
+			long rBulb;
+			rBulb = getRandom(i, NUM_PIXELS); //for non-repeating random
+			//rBulb = i; // for sequential
+
+			outLo = (NUM_PIXELS + (fxIntVars[idx][6] * fxIntVars[idx][1]) - fxIntVars[idx][1]) % NUM_PIXELS;
+			outHi = (NUM_PIXELS + (fxIntVars[idx][6] * fxIntVars[idx][1]) - 1) % NUM_PIXELS;
+			inLo = (NUM_PIXELS + (fxIntVars[idx][6] * fxIntVars[idx][1])) % NUM_PIXELS;
+			inHi = (NUM_PIXELS + (fxIntVars[idx][6] * fxIntVars[idx][1]) + fxIntVars[idx][1] - 1) % NUM_PIXELS;
+
+			color = hsv2rgb(fxIntVars[idx][3], 255, 0, 0); //default off
+			if ((rBulb >= inLo) && (rBulb <= inHi)) {
+				color = hsv2rgb(fxIntVars[idx][3], 255, getGamma(fxIntVars[idx][4]), 0); //fade in new set
+			} else if ((rBulb >= outLo) && (rBulb <= outHi)) {
+				color = hsv2rgb(fxIntVars[idx][3], 255, 255 - getGamma(fxIntVars[idx][4]), 0);//fade out last set
+			}
+
+			*ptr++ = color >> 16; *ptr++ = color >> 8; *ptr++ = color;
+		}
+
+		//fade counter - if brighness level < 255 AND frame count == 0
+		if ((fxIntVars[idx][4] < 255) && (fxIntVars[idx][7] == 0)) {
+			fxIntVars[idx][4]++; //increase brightness (decrease brightness old)
+		}
+
+		//increase frame count, only when at max brightess
+		// frame counter - if brightness == 255 
+		if (fxIntVars[idx][4] == 255) {
+			fxIntVars[idx][5]++; // increase frame count
+		}
+
+		//start over, with new bulbs - if frame count == frames to stay at full level
+		if (fxIntVars[idx][5] == fxIntVars[idx][2]) {
+			fxIntVars[idx][5] = 0; //reset frame count
+			fxIntVars[idx][4] = 0; //reset brightness
+			fxIntVars[idx][6] = fxIntVars[idx][8]++; // go to next set of bulbs
+		}
+
+		//start completely over
+		if (fxIntVars[idx][6] >= (NUM_PIXELS / fxIntVars[idx][1])) {
+			fxIntVars[idx][6] = 0;
+		}
+
+		frame[idx] = 0;
+	} else {
+		frame[idx]++;
+	}
 }
 
-int SNfastfloor(float n)
-{
-	return n > 0 ? (int) n : (int) n - 1;
-}
 
-float SNk_fn(int a)
-{
-	ss = (AA[0] + AA[1] + AA[2]) * onesixth;
-	float x = uu - AA[0] + ss;
-	float y = vv - AA[1] + ss;
-	float z = ww - AA[2] + ss;
-	float t = 0.6f - x * x - y * y - z * z;
-	int h = SNshuffle(ii + AA[0], jj + AA[1], kk + AA[2]);
-	AA[a]++;
-	if (t < 0) return 0;
-	int b5 = h >> 5 & 1;
-	int b4 = h >> 4 & 1;
-	int b3 = h >> 3 & 1;
-	int b2 = h >> 2 & 1;
-	int b = h & 3;
-	float p = b == 1 ? x : b == 2 ? y : z;
-	float q = b == 1 ? y : b == 2 ? z : x;
-	float r = b == 1 ? z : b == 2 ? x : y;
-	p = b5 == b3 ? -p : p;
-	q = b5 == b4 ? -q: q;
-	r = b5 != (b4^b3) ? -r : r;
-	t *= t;
-	return 8 * t * t * (p + (b == 0 ? q + r : b2 == 0 ? q : r));
-}
+//- All one colour, but level set by fadeTable 0 1 2 3 2 1 0 1 2 3 2 1 0 - around all bulbs
+//	- variations: rotate bulbs / slowly invert fade / rotate & invert
+//	              gap between each level for another colour 0 D 1 C 2 B 3 A 3 B 2 C 1 D 0
+//				  rotate in opps directions
+//				  no gap so colour add up at peak
+void ProgramRotatingCircles(byte idx) {
+	if(fxIntVars[idx][0] == 0) {
+		fxIntVars[idx][1] = random(1536); // Random hue
+		fxIntVars[idx][2] = (fxIntVars[idx][1] + 768) % 1536; // complementary hue
+		fxIntVars[idx][3] = 0; //frame count
+		fxIntVars[idx][4] = 0;
+		fxIntVars[idx][5] = 0; 
+		fxIntVars[idx][6] = 0; //which bulbs at a time count
 
-int SNshuffle(int i, int j, int k)
-{
-	return SNb(i, j, k, 0) + SNb(j, k, i, 1) + SNb(k, i, j, 2) + SNb(i, j, k, 3) + SNb(j, k, i, 4) + SNb(k, i, j, 5) + SNb(i, j, k, 6) + SNb(j, k, i, 7);
-}
+		frameDelay[idx] = 2; //delay frame count
+		frame[idx] = 0; //delay frame
 
-int SNb(int i, int j, int k, int B)
-{
-	return TT[SNb(i, B) << 2 | SNb(j, B) << 1 | SNb(k, B)];
-}
+		fxIntVars[idx][0] = 1; // Effect initialized
+	}
 
-int SNb(int N, int B)
-{
-	return N >> B & 1;
+	byte *ptr = &imgData[idx][0];
+	long color;
+
+	if (frame[idx] == frameDelay[idx]) { //only do once every delay frames
+		for(int i=0; i<NUM_PIXELS; i++) {
+			if (i % 2 == 1) {
+				color = hsv2rgb(fxIntVars[idx][1], 255, GetSmoothFade8((i+fxIntVars[idx][3]) % 9), 0);
+			} else {
+				color = hsv2rgb(fxIntVars[idx][2], 255, GetSmoothFade8((18-i+fxIntVars[idx][3]) % 9), 0);
+			}
+
+			*ptr++ = color >> 16; *ptr++ = color >> 8; *ptr++ = color;
+		}
+
+		fxIntVars[idx][3]++;
+
+		frame[idx] = 0;
+	} else {
+		frame[idx]++;
+	}
 }
 
 
@@ -1599,7 +1677,7 @@ void crossfadeDither(void) {
 // Only the final end product is converted to 7 bits, the native format
 // for the LPD8806 LED driver.  Gamma correction and 7-bit decimation
 // thus occur in a single operation.
-/*byte gammaTable[]  = 
+byte gammaTable[]  = 
 { 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 1, 1, 1, 1, 1, 1, 1, 2, 
 2, 2, 2, 2, 2, 3, 3, 3, 3, 4, 4, 4, 4, 5, 5, 5, 5, 6, 6, 6, 7, 
 7, 7, 8, 8, 8, 9, 9, 9, 10, 10, 11, 11, 11, 12, 12, 13, 13, 14, 
@@ -1616,7 +1694,7 @@ void crossfadeDither(void) {
 171, 173, 175, 176, 178, 180, 181, 183, 185, 186, 188, 190, 192, 
 193, 195, 197, 199, 200, 202, 204, 206, 207, 209, 211, 213, 215, 
 217, 218, 220, 222, 224, 226, 228, 230, 232, 233, 235, 237, 239, 
-241, 243, 245, 247, 249, 251, 253, 255 };*/
+241, 243, 245, 247, 249, 251, 253, 255 };
 
 // This function (which actually gets 'inlined' anywhere it's called)
 // exists so that getGammaTable can reside out of the way down here in the
@@ -1801,14 +1879,23 @@ inline byte getRandom(byte x, byte size) {
 
 //Pleasing fade of bulbs - like tungsten filament light bulbs
 //fade levels - adjust until looks pleasing
-//ToDo: extra parameter of fade levels: e.g. GetSmoothFade(blah, 27)
+//ToDo: extra parameter of fade levels: e.g. GetSmoothFade27(blah, 27)
 //      with different fadeTables
-byte fadeTable[27]  = {255, 223, 191, 159, 127, 111, 95, 79, 63, 55, 47, 
+byte fadeTable27[27]  = {255, 223, 191, 159, 127, 111, 95, 79, 63, 55, 47, 
 39, 31, 27, 23, 19, 15, 13, 11, 9, 7, 6, 5, 4, 3, 2, 1};
 // This function gets the fade level
-inline byte GetSmoothFade(byte x) {
+inline byte GetSmoothFade27(byte x) {
 	if (x < 28) {
-		return pgm_read_byte(&fadeTable[x]);
+		return pgm_read_byte(&fadeTable27[x]);
+	} else {
+		return 0;
+	}
+}
+byte fadeTable9[9]  = {255, 127, 63, 31, 15, 7, 4, 2, 1};
+// This function gets the fade level
+inline byte GetSmoothFade8(byte x) {
+	if (x < 10) {
+		return pgm_read_byte(&fadeTable9[x]);
 	} else {
 		return 0;
 	}
@@ -1825,6 +1912,106 @@ inline byte GetSmoothFade(byte x) {
 //		return (size * 2 - x - 1) % size;
 //	}
 //}
+
+// Simplex noise support functions:
+// From an original algorithm by Ken Perlin.
+// Returns a value in the range of about [-0.347 .. 0.347]
+float SNSimplexNoise(float x, float y, float z)
+{
+	// Skew input space to relative coordinate in simplex cell
+	ss = (x + y + z) * onethird;
+	ii = SNfastfloor(x+ss);
+	jj = SNfastfloor(y+ss);
+	kk = SNfastfloor(z+ss);
+
+	// Unskew cell origin back to (x, y , z) space
+	ss = (ii + jj + kk) * onesixth;
+	uu = x - ii + ss;
+	vv = y - jj + ss;
+	ww = z - kk + ss;;
+
+	AA[0] = AA[1] = AA[2] = 0;
+
+	// For 3D case, the simplex shape is a slightly irregular tetrahedron.
+	// Determine which simplex we're in
+	int hi = uu >= ww ? uu >= vv ? 0 : 1 : vv >= ww ? 1 : 2;
+	int lo = uu < ww ? uu < vv ? 0 : 1 : vv < ww ? 1 : 2;
+
+	return SNk_fn(hi) + SNk_fn(3 - hi - lo) + SNk_fn(lo) + SNk_fn(0);
+}
+
+int SNfastfloor(float n)
+{
+	return n > 0 ? (int) n : (int) n - 1;
+}
+
+float SNk_fn(int a)
+{
+	ss = (AA[0] + AA[1] + AA[2]) * onesixth;
+	float x = uu - AA[0] + ss;
+	float y = vv - AA[1] + ss;
+	float z = ww - AA[2] + ss;
+	float t = 0.6f - x * x - y * y - z * z;
+	int h = SNshuffle(ii + AA[0], jj + AA[1], kk + AA[2]);
+	AA[a]++;
+	if (t < 0) return 0;
+	int b5 = h >> 5 & 1;
+	int b4 = h >> 4 & 1;
+	int b3 = h >> 3 & 1;
+	int b2 = h >> 2 & 1;
+	int b = h & 3;
+	float p = b == 1 ? x : b == 2 ? y : z;
+	float q = b == 1 ? y : b == 2 ? z : x;
+	float r = b == 1 ? z : b == 2 ? x : y;
+	p = b5 == b3 ? -p : p;
+	q = b5 == b4 ? -q: q;
+	r = b5 != (b4^b3) ? -r : r;
+	t *= t;
+	return 8 * t * t * (p + (b == 0 ? q + r : b2 == 0 ? q : r));
+}
+
+int SNshuffle(int i, int j, int k)
+{
+	return SNb(i, j, k, 0) + SNb(j, k, i, 1) + SNb(k, i, j, 2) + SNb(i, j, k, 3) + SNb(j, k, i, 4) + SNb(k, i, j, 5) + SNb(i, j, k, 6) + SNb(j, k, i, 7);
+}
+
+int SNb(int i, int j, int k, int B)
+{
+	return TT[SNb(i, B) << 2 | SNb(j, B) << 1 | SNb(k, B)];
+}
+
+int SNb(int N, int B)
+{
+	return N >> B & 1;
+}
+
+/*//Add one, because programs using this will be 0 based
+//ToDo: fix so ...
+int GetQuadraticLevel(int pos, int length, bool half) {
+	float topIndex;
+	float iQuad;
+	float fPos = float(pos);
+	float fLen = float(length);
+	if (half) {
+		topIndex = (float)length;
+		iQuad = ((fPos + 1.0)* (fPos + 1.0)) + fPos + 1.0;
+	} else { //... this part works evenly
+		topIndex = fLen / 2.0;
+		if (fPos > topIndex) {
+			fPos = fLen - fPos;
+			iQuad = ((fPos - 1.0)* (fPos - 1.0)) + fPos - 1.0;
+		} else {
+			iQuad = ((fPos + 1.0)* (fPos + 1.0)) + fPos + 1.0;
+		}
+	}
+
+	//Serial.print(fPos);  Serial.print(" ");
+
+
+	float hQuad = (topIndex * topIndex) + topIndex;
+
+	return int((iQuad/hQuad)*255.0);
+}*/
 
 
 //Chaser support functions
