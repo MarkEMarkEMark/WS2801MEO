@@ -30,6 +30,10 @@ Programmed for the Due - so 100+ bulbs and fast frame rates now possible! */
     r = 201; g = 226; b = 255; //-OVERCAST SKY - 7000
     r = 64; g = 156; b = 255; //-CLEAR BLUE SKY - 20000 
 
+- standard rainbow at low brightness. Shoot white trail in opps direction
+	- rainbow: hsl2rgb(rainbowcolor, 255, 15) --->
+	- white:   hsl2rgb(rainbowcolor, 0 + fade, (255 - fade) stop at 15)<---
+
 */
 
 
@@ -147,13 +151,13 @@ byte imgData[2][NUM_PIXELS * 3],	// Data for 2 pixelStrings worth of imagery
 	alphaMask[NUM_PIXELS],			// Alpha channel for compositing images
 	backImgIdx = 0,					// Index of 'back' image (always 0 or 1)
 	fxIdx[3];						// Effect # for back & front images + alpha
-int fxIntVars[3][14],				// Effect instance variables (explained later)
+int fxIntVars[3][15],				// Effect instance variables (explained later)
 	tCounter   = -1,				// Countdown to next transition
 	transitionTime;					// Duration (in frames) of current transition
-float fxFltVars[3][1];				// MEO: float variables
-int32_t fxI32Vars[3][3];			// MEO: int32 variables
-uint16_t fxI16Vars[3][1];			// MEO: uint16 variables
-uint8_t fxI8Vars[3][1],				// MEO: uint8 variables
+float fxFltVars[3][5];				// MEO: float variables
+int32_t fxI32Vars[3][5];			// MEO: int32 variables
+uint16_t fxI16Vars[3][5];			// MEO: uint16 variables
+uint8_t fxI8Vars[6][5],				// MEO: uint8 variables
 		frameDelay[3],				// MEO: if too fast - can set number of frames to pause
 		frame[3];					// MEO: counter for frameDelay
 
@@ -172,6 +176,7 @@ void ProgramLarsonScanner(byte idx);	//MEO
 void ProgramStrobeFade(byte idx);		//MEO
 void ProgramOldFashioned(byte idx);		//MEO
 void ProgramRotatingCircles(byte idx);  //MEO
+void ProgramRainbowWhite(byte idx);		//MEO
 
 // Chaser functions
 void SetChaserColor(uint8_t bulb, long color, byte idx);
@@ -202,15 +207,16 @@ void (*renderEffect[])(byte) = {
 	ProgramPhasing,
 	ProgramSimplexNoise,
 	//ProgramRandomStrobe,
-	ProgramFlames,
+	//ProgramFlames,
 	ProgramChaser,
 	ProgramLarsonScanner,
 	ProgramOldFashioned,
 	ProgramRotatingCircles,
+	ProgramRainbowWhite,
 	ProgramStrobeFade},
 	(*renderAlpha[])(void)  = {
 		//crossfadeDither,
-		//crossfadeWipe,
+		crossfadeWipe,
 		crossfadeSimple};
 
 	
@@ -241,9 +247,12 @@ void setup() {
 	//Timer function re-written for Ardunino Due
 	//startTimer(TC1, 0, TC3_IRQn, FRAMES_PER_SECOND);
 
-	//for (int i= 0; i <21;i++ )
-	//{
+	//for (int i= 0; i <21;i++ ) {
 	//	Serial.println(GetQuadraticLevel(i, 21, true));
+	//}
+
+	//for (int i = 0; i < 400; i++) {
+	//	Serial.println(GetSimpleOscillatePos(i, 99, 99));
 	//}
 
 }
@@ -506,7 +515,7 @@ void ProgramWavyFlag(byte idx) {
 		fxIntVars[idx][3] = 200 + random(200); // Wave 'puckeryness'
 		fxIntVars[idx][4] = 0;                 // Current  position
 		
-		frameDelay[idx] = 6; //delay frame count
+		frameDelay[idx] = 2; //delay frame count
 		frame[idx] = 0; //delay frame
 
 		fxIntVars[idx][0] = 1;                 // Effect initialized
@@ -1310,7 +1319,7 @@ void ProgramChaser(byte idx) {
 		fxIntVars[idx][1] = random(3); //chaser pattern
 		fxIntVars[idx][2] = 1; //number of pixels in a row with specific color
 		fxIntVars[idx][3] = random(1536); //color starting point
-		frameDelay[idx] = 8; //delay frame count
+		frameDelay[idx] = 2; //delay frame count
 		frame[idx] = 0; //delay frame
 
 		fxIntVars[idx][0] = 1; // Effect initialized
@@ -1370,6 +1379,11 @@ void ProgramLarsonScanner(byte idx){
 		fxI8Vars[idx][1] = random(4); // full rainbow or one of the lines
 		fxI8Vars[idx][2] = random(2); //whether to rainbow, or fixed colour
 
+		fxI32Vars[idx][1] = NUM_PIXELS; //position - start one loop in, so can count backwards
+		fxI8Vars[idx][3]= 1; //repeats per string
+		fxI8Vars[idx][4]= 99; //oscillate forward steps
+		fxI8Vars[idx][5]= 99; //oscillate backward steps
+
 		fxIntVars[idx][0] = 1; //end initialise
 	}
 
@@ -1378,45 +1392,28 @@ void ProgramLarsonScanner(byte idx){
 	if (frame[idx] == frameDelay[idx]) {//only do once every delay frames
 		long color, offset;
 		for(int i = 0; i < NUM_PIXELS; i++) {
-			if (fxI8Vars[idx][1] == 0) {
-				offset = fxI32Vars[idx][0] - i;//Almost works for trail off the end: (NUM_PIXELS + fxI32Vars[idx][0] - i) % NUM_PIXELS;
+			//do backwards trail offset, so brighter overrides dimmer when overlap
+			color = hsv2rgb(0,0,0,0); //background
+			for (offset = 27; offset >= 0; offset--) {
 				
-				//idea to have a loop of bulbs that go back and forth - doesn't work
-				//offset = getLarSeq(fxI32Vars[idx][0], NUM_PIXELS) - i;
-			
-			} else {
-				offset = i - fxI32Vars[idx][0]; //(NUM_PIXELS + i - fxI32Vars[idx][0]) % NUM_PIXELS;
-			}
-			//color = hsv2rgb(fxIntVars[idx][1], 255, GetSmoothFade27(offset), 0);
-
-			if (fxI8Vars[idx][2] == 1) { //rainbow
-				color = hsv2rgb(fxIntVars[idx][3] + fxIntVars[idx][1] 
-					* i / NUM_PIXELS, 255, GetSmoothFade27(offset), fxI8Vars[idx][1]);
-			} else { //fixed color
-				color = hsv2rgb(fxIntVars[idx][1], 255, GetSmoothFade27(offset), 0);
+				if (i == GetSimpleOscillatePos((long)fxI32Vars[idx][1] - offset, (long)fxI8Vars[idx][4], (long)fxI8Vars[idx][5]))
+				{
+					if (fxI8Vars[idx][2] == 1) { //rainbow
+						color = hsv2rgb((fxIntVars[idx][3] + fxIntVars[idx][1] 
+							* i / NUM_PIXELS) - offset, 255, GetSmoothFade27(offset), fxI8Vars[idx][1]);
+					} else { //fixed color
+						color = hsv2rgb(fxIntVars[idx][1], 255, GetSmoothFade27(offset), 0);
+					}
+				}
 			}
 			*ptr++ = color >> 16; *ptr++ = color >> 8; *ptr++ = color;
 		}
 
-		//increase/decrease eye position depending on direction
-		if (fxI8Vars[idx][1] == 0) {
-			fxI32Vars[idx][0]++;
-		} else {
-			fxI32Vars[idx][0]--;
-		}
-
-		//change direction at end of string:
-		if (fxI32Vars[idx][0] == NUM_PIXELS) {
-			fxI8Vars[idx][1] = 1;
-			fxI32Vars[idx][0] = NUM_PIXELS - 3;
-		}
-		if (fxI32Vars[idx][0] == -1) {
-			fxI8Vars[idx][1] = 0;
-			fxI32Vars[idx][0] = 2;
-		}
-
 		//for rainbow version - move through rainbow
 		fxIntVars[idx][3] += fxIntVars[idx][2];
+
+		//increase oscillate step
+		fxI32Vars[idx][1]++;
 
 		frame[idx] = 0;
 	} else {
@@ -1446,7 +1443,7 @@ void ProgramStrobeFade(byte idx){
 		if(random(2) == 0) fxIntVars[idx][2] = -fxIntVars[idx][2];
 		fxIntVars[idx][3] = 0; // Current position
 		fxI8Vars[idx][1] = random(4); // full rainbow or one of the lines
-		fxI8Vars[idx][2] = random(2); //whether to rainbow, or fixed colour
+		fxI8Vars[idx][2] = random(3); //whether fixed colour, rainbow, or rainbow change color fade
 
 		fxIntVars[idx][0] = 1; //end initialise
 	}
@@ -1458,11 +1455,14 @@ void ProgramStrobeFade(byte idx){
 
 		for(int i = 0; i < NUM_PIXELS; i++) {
 			offset = (NUM_PIXELS + fxI32Vars[idx][0] - getRandom(i, NUM_PIXELS)) % NUM_PIXELS;
-			if (fxI8Vars[idx][2] == 1) { //rainbow
-				color = hsv2rgb(fxIntVars[idx][3] + fxIntVars[idx][1] 
-					* i / NUM_PIXELS, 255, GetSmoothFade27(offset), fxI8Vars[idx][1]);
-			} else { //fixed color
+			if (fxI8Vars[idx][2] == 0) {
 				color = hsv2rgb(fxIntVars[idx][1], 255, GetSmoothFade27(offset), 0);
+			} else if (fxI8Vars[idx][2] == 1) {//rainbow - the complex color term is due to needing to fade in the same colour - otherwise the fade carry  on rotating through colours
+				color = hsv2rgb(((fxIntVars[idx][3] + fxIntVars[idx][1] 
+					* i / NUM_PIXELS) - (offset * fxIntVars[idx][2])) % 1536, 255, GetSmoothFade27(offset), fxI8Vars[idx][1]);
+			} else { //fade changes colour
+				color = hsv2rgb(((fxIntVars[idx][3] + fxIntVars[idx][1] 
+					* i / NUM_PIXELS) + (offset * fxIntVars[idx][2]) * 10) % 1536, 255, GetSmoothFade27(offset), fxI8Vars[idx][1]);
 			}
 			*ptr++ = color >> 16; *ptr++ = color >> 8; *ptr++ = color;
 		}
@@ -1593,6 +1593,85 @@ void ProgramRotatingCircles(byte idx) {
 	} else {
 		frame[idx]++;
 	}
+}
+
+
+// ToDo: Rainbow - with white shooting in opps direction
+void ProgramRainbowWhite(byte idx) {
+	if(fxIntVars[idx][0] == 0) { // Initialize effect?
+		// Number of repetitions (complete loops around color wheel); any
+		// more than 4 per meter just looks too chaotic and un-rainbow-like.
+		// Store as hue 'distance' around complete belt:
+		fxIntVars[idx][1] = 0; //1536; //(4 + random(1 * ((NUM_PIXELS + 31) / 32))) * 1536;  //1 was 4
+		// Frame-to-frame hue increment (speed) -- may be positive or negative,
+		// but magnitude shouldn't be so small as to be boring.  It's generally
+		// still less than a full pixel per frame, making motion very smooth.
+		fxIntVars[idx][2] = 20;//4 + random(fxIntVars[idx][1]) / NUM_PIXELS;  //1 was 4
+		// Reverse speed and hue shift direction half the time.
+		if(random(2) == 0) fxIntVars[idx][1] = -fxIntVars[idx][1];
+		if(random(2) == 0) fxIntVars[idx][2] = -fxIntVars[idx][2];
+		fxIntVars[idx][3] = 0; // Current position
+		fxIntVars[idx][4] = 1; //increase step 1 / decrease step 0
+		fxIntVars[idx][5] = random(4); //full rainbow / RG only / GB / BR
+		fxIntVars[idx][6] = 0; //white position
+
+		fxIntVars[idx][0] = 1; // Effect initialized
+	}
+
+	byte *ptr = &imgData[idx][0];
+	long color, i, wht;
+
+	//wht = GetSimpleOscillatePos(fxIntVars[idx][6], 10, 5) ;
+
+	for(i=0; i<NUM_PIXELS; i++) {
+		color = hsv2rgb(fxIntVars[idx][3] + fxIntVars[idx][1] * i / NUM_PIXELS,
+			255, 31, fxIntVars[idx][5]);
+
+
+	//note: in reverse fade order, so that brightest 'wins' when can be either
+		if (i == GetSimpleOscillatePos(fxIntVars[idx][6] - 3, 25, 20)) {
+			color = hsv2rgb(fxIntVars[idx][3] + fxIntVars[idx][1] * i / NUM_PIXELS,
+			127, 31, fxIntVars[idx][5]);
+		}
+
+		if (i == GetSimpleOscillatePos(fxIntVars[idx][6] - 2, 25, 20)) {
+			color = hsv2rgb(fxIntVars[idx][3] + fxIntVars[idx][1] * i / NUM_PIXELS,
+			63, 63, fxIntVars[idx][5]);
+		}
+
+		if (i == GetSimpleOscillatePos(fxIntVars[idx][6] - 1, 25, 20)) {
+			color = hsv2rgb(fxIntVars[idx][3] + fxIntVars[idx][1] * i / NUM_PIXELS,
+			31, 127, fxIntVars[idx][5]);
+		}
+
+		if (i == GetSimpleOscillatePos(fxIntVars[idx][6], 25, 20)) {
+			color = hsv2rgb(fxIntVars[idx][3] + fxIntVars[idx][1] * i / NUM_PIXELS,
+			15, 255, fxIntVars[idx][5]);
+		}
+
+		*ptr++ = color >> 16; *ptr++ = color >> 8; *ptr++ = color;
+	}
+	fxIntVars[idx][3] += fxIntVars[idx][2];
+
+	////Make a bit more interesing by gradually tightening rainbow span size
+	//step in direction
+	if (fxIntVars[idx][4] == 1)
+	{
+		fxIntVars[idx][1]++;
+	} else {
+		fxIntVars[idx][1]--;
+	}
+	//change direction
+	if (fxIntVars[idx][1] == 2500)
+	{
+		fxIntVars[idx][4] = 0;
+	}
+	if (fxIntVars[idx][1] == -1)
+	{
+		fxIntVars[idx][4] = 1;
+	}
+	
+	fxIntVars[idx][6]++; //white position
 }
 
 
@@ -1901,18 +1980,6 @@ inline byte GetSmoothFade8(byte x) {
 	}
 }
 
-
-//This function gets a back and forth sequence for larson scanner
-// not quite right as, both side end bulbs are repeated, 0 1 2 3 3 2 1 0 0 1 2 3 3 2 1 0
-//inline int getLarSeq(int x, byte size) {
-//	x = x % (size * 2); //trim to twice number of bulbs
-//	if (x < size) {
-//		return x;
-//	} else {
-//		return (size * 2 - x - 1) % size;
-//	}
-//}
-
 // Simplex noise support functions:
 // From an original algorithm by Ken Perlin.
 // Returns a value in the range of about [-0.347 .. 0.347]
@@ -2013,6 +2080,25 @@ int GetQuadraticLevel(int pos, int length, bool half) {
 	return int((iQuad/hQuad)*255.0);
 }*/
 
+
+
+//at it's simplest, provides all Larson Scanner position data (timestep, 99, 99)
+//but with different vals for forward, back, will do a zig zag effect
+// t=time, a = forward steps, b = backward steps
+// Thanks to Mohit Bakshi from Quora for providing equation:
+// https://www.quora.com/Mathematics/What-is-the-equation-for-a-moving-zig-zag-type-oscillation
+// using this allows me to work out previous positions so that I can do smooth fades
+long GetSimpleOscillatePos(long t, long a, long b) {
+	long s, n;
+	n = t / (a + b);
+
+	if ((n * (a + b) <= t) && (t <= ((n + 1) * a) + (n * b))) {
+		s = t - (2 * n * b);
+	} else if ((((n + 1) * a) + (n * b) <= t) && (t <= (n + 1) * (a + b))) {
+		s = (2 * (n + 1) * a) - t;
+	}
+	return s % NUM_PIXELS;
+}
 
 //Chaser support functions
 
