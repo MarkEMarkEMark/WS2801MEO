@@ -32,3 +32,12 @@ There is a bog standard 'chaser' function , but to keep it interesting, rather t
 There is a fire pattern based on Christopher De Vries code. I hope to improve this with interpolation in the future.
 
 I've added several new simpler programs, larson scanner and the like - but with smooth trails...
+
+------
+
+Adafruit invests time and resources providing this open source code, 
+  please support Adafruit and open-source hardware by purchasing 
+  products from Adafruit!
+
+  Written by Limor Fried/Ladyada for Adafruit Industries.  
+  BSD license, all text above must be included in any redistribution
