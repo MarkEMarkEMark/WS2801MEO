@@ -7,6 +7,7 @@ Programmed for the Due - so 100+ bulbs and fast frame rates now possible! */
 
 	- See if can replace fade table with GetQuadraticLevel function
 
+	- replace common vars with named ones (like current frame, main hue etc)
 
 /* ToDo: Patterns Ideas
 
@@ -35,7 +36,6 @@ Programmed for the Due - so 100+ bulbs and fast frame rates now possible! */
 	- white:   hsl2rgb(rainbowcolor, 0 + fade, (255 - fade) stop at 15)<---
 
 */
-
 
 // THIS PROGRAM *WILL* *NOT* *WORK* ON REALLY LONG LED STRIPS.  IT USES
 // AN INORDINATE AMOUNT OF RAM IN ORDER TO ACHIEVE ITS BUTTERY-SMOOTH
@@ -84,7 +84,7 @@ some future expansion if I'm ever foolish enough to attempt that. */
 #define pgm_read_byte(x) (*(x))
 #define NUM_PIXELS 100
 #define FRAMES_PER_SECOND 60
-#define FADE_FRAMES 0   //number of frames to crossfade within
+#define FADE_FRAMES 256   //number of frames to crossfade within
 #define STAY_FRAMES 2048 //number of frames to show a program - if multiple of half num pixels, then some programs won't run into each other (eg random strobe fade)
 #define MAX_LEVEL 256 //max R,G,B or S, V levels (note: need to subtract one to make 0 based)
 #define MAX_LEVEL0 (MAX_LEVEL - 1)
@@ -153,16 +153,15 @@ byte imgData[2][NUM_PIXELS * 3],	// Data for 2 pixelStrings worth of imagery
 	alphaMask[NUM_PIXELS],			// Alpha channel for compositing images
 	backImgIdx = 0,					// Index of 'back' image (always 0 or 1)
 	fxIdx[3];						// Effect # for back & front images + alpha
+bool fxInitialised[3];			// Whether to set initialisation variables, or already fxInitialised
 int fxIntVars[3][15],				// Effect instance variables (explained later)
+	fxArrVars[3][2][10],			// MEO: 2 x Array
+	fxFrameCount[3],				// MEO: current overall frame count of single effect
+	fxFrameDelay[3],			// MEO: if too fast - can set number of frames to pause
+	fxFrameDelayCount[3],		// MEO: counter for fxFrameDelay
 	tCounter   = -1,				// Countdown to next transition
 	transitionTime;					// Duration (in frames) of current transition
 float fxFltVars[3][5];				// MEO: float variables
-int32_t fxI32Vars[3][8],			// MEO: int32 variables
-	fxArrVars[3][2][10];			// MEO: 2 x Array
-uint16_t fxI16Vars[3][8];			// MEO: uint16 variables
-uint8_t fxI8Vars[3][8],				// MEO: uint8 variables
-		frameDelay[3],				// MEO: if too fast - can set number of frames to pause
-		frame[3];					// MEO: counter for frameDelay
 
 // function prototypes, leave these be :)
 void ProgramSolidColor(byte idx);		//pburgess
@@ -203,21 +202,21 @@ char fixCos(int angle);
 // each of these appears later in this file.  Just a few to start with...
 // simply append new ones to the appropriate list here:
 void (*renderEffect[])(byte) = {
-	//ProgramSolidColor},
-	//ProgramRotatingRainbow,
-	//ProgramSineWave, //affected by fixSin/fixCos issue - temp fixed by using proper Sin
-	//ProgramWavyFlag, //affected by fixSin/fixCos issue -temp fixed by using proper Cos
-	//ProgramPulse,
-	//ProgramPhasing,
-	//ProgramSimplexNoise,
-	//ProgramRandomStrobe,
-	//ProgramFlames,
-	//ProgramChaser,
-	//ProgramLarsonScanner},
-	//ProgramOldFashioned,
-	//ProgramRotatingCircles,
-	//ProgramRainbowWhite,
-	//ProgramStrobeFade},
+	ProgramSolidColor,
+	ProgramRotatingRainbow,
+	ProgramSineWave, //affected by fixSin/fixCos issue - temp fixed by using proper Sin
+	ProgramWavyFlag, //affected by fixSin/fixCos issue -temp fixed by using proper Cos
+	ProgramPulse,
+	ProgramPhasing,
+	ProgramSimplexNoise,
+	ProgramRandomStrobe,
+	ProgramFlames,
+	ProgramChaser,
+	ProgramLarsonScanner,
+	ProgramOldFashioned,
+	ProgramRotatingCircles,
+	ProgramRainbowWhite,
+	ProgramStrobeFade,
 	ProgramRandomSplash},
 	(*renderAlpha[])(void)  = {
 		//crossfadeDither,
@@ -232,6 +231,9 @@ uint32_t last_time;
 
 
 void setup() {
+	//Timer function re-written for Ardunino Due
+	//startTimer(TC1, 0, TC3_IRQn, 60);
+
 	// Open serial communications and wait for port to open:
 	Serial.begin(115200);
 
@@ -248,9 +250,6 @@ void setup() {
 
 	//MEO Ownedelongs' no timer interrupt fudge
 	last_time = millis();
-
-	//Timer function re-written for Ardunino Due
-	//startTimer(TC1, 0, TC3_IRQn, FRAMES_PER_SECOND);
 
 	//for (int i= 0; i <21;i++ ) {
 	//	Serial.println(GetQuadraticLevel(i, 21, true));
@@ -277,21 +276,25 @@ void loop() {
 	if (millis() > last_time + (1000/FRAMES_PER_SECOND) || millis() < last_time) //1000/fps
 	{
 		last_time = millis();
-		TC3_Handler();
+		Callback();
 	}
 }
-
-
-
 
 // Timer interrupt handler.
 void TC3_Handler() {
   // You must do TC_GetStatus to "accept" interrupt
   // As parameters use the first two parameters used in startTimer (TC1, 0 in this case)
-  //TC_GetStatus(TC1, 0);
+  TC_GetStatus(TC1, 0);
 
-	//Serial.println("Tick");
+	//Serial.println("Tick!");
 
+  Callback();
+}
+
+//###############################
+
+// Timer interrupt handler.
+void Callback() {
 	// Very first thing here is to issue the pixelString data generated from the
 	// *previous* callback.  It's done this way on purpose because show() is
 	// roughly constant-time, so the refresh will always occur on a uniform
@@ -350,8 +353,8 @@ void TC3_Handler() {
 		fxIdx[frontImgIdx] = random((sizeof(renderEffect) / sizeof(renderEffect[0])));
 		fxIdx[2]           = random((sizeof(renderAlpha)  / sizeof(renderAlpha[0])));
 		transitionTime     = FADE_FRAMES; //random(30, 181); // 0.5 to 3 second transitions
-		fxIntVars[frontImgIdx][0] = 0; // Effect not yet initialized
-		fxIntVars[2][0]           = 0; // Transition not yet initialized
+		fxInitialised[frontImgIdx] = false; // Effect not yet initialized
+		fxInitialised[2]           = false; // Transition not yet initialized
 	} else if(tCounter >= transitionTime) { // End transition
 		fxIdx[backImgIdx] = fxIdx[frontImgIdx]; // Move front effect index to back
 		backImgIdx        = 1 - backImgIdx;     // Invert back index
@@ -377,14 +380,13 @@ void TC3_Handler() {
 // Simplest rendering effect: fill entire image with solid color
 void ProgramSolidColor(byte idx) {
 	// Only needs to be rendered once, when effect is initialized:
-	if(fxIntVars[idx][0] == 0) {
+	if(fxInitialised[idx] == false) {
 		byte *ptr = &imgData[idx][0],
 			r = random(256), g = random(256), b = random(256);
 		for(int i=0; i<NUM_PIXELS; i++) {
 			*ptr++ = r; *ptr++ = g; *ptr++ = b;
 		}
-
-		fxIntVars[idx][0] = 1; // Effect initialized
+		fxInitialised[idx] = true; // Effect initialized
 	}
 }
 
@@ -393,75 +395,76 @@ void ProgramSolidColor(byte idx) {
 // Not a big fan of this pattern (it's way overused with LED stuff), but it's
 // practically part of the Geneva Convention by now.
 void ProgramRotatingRainbow(byte idx) {
-	if(fxIntVars[idx][0] == 0) { // Initialize effect?
+	if(fxInitialised[idx] == false) { // Initialize effect?
 		// Number of repetitions (complete loops around color wheel); any
 		// more than 4 per meter just looks too chaotic and un-rainbow-like.
 		// Store as hue 'distance' around complete belt:
-		fxIntVars[idx][1] = 0; //1536; //(4 + random(1 * ((NUM_PIXELS + 31) / 32))) * 1536;  //1 was 4
+		fxIntVars[idx][0] = 0; //1536; //(4 + random(1 * ((NUM_PIXELS + 31) / 32))) * 1536;  //1 was 4
 		// Frame-to-frame hue increment (speed) -- may be positive or negative,
 		// but magnitude shouldn't be so small as to be boring.  It's generally
 		// still less than a full pixel per frame, making motion very smooth.
-		fxIntVars[idx][2] = 20;//4 + random(fxIntVars[idx][1]) / NUM_PIXELS;  //1 was 4
+		fxIntVars[idx][1] = 20;//4 + random(fxIntVars[idx][1]) / NUM_PIXELS;  //1 was 4
 		// Reverse speed and hue shift direction half the time.
+		if(random(2) == 0) fxIntVars[idx][0] = -fxIntVars[idx][0];
 		if(random(2) == 0) fxIntVars[idx][1] = -fxIntVars[idx][1];
-		if(random(2) == 0) fxIntVars[idx][2] = -fxIntVars[idx][2];
-		fxIntVars[idx][3] = 0; // Current position
-		fxIntVars[idx][4] = 1; //increase step 1 / decrease step 0
-		fxIntVars[idx][5] = random(4); //full rainbow / RG only / GB / BR
-		fxIntVars[idx][0] = 1; // Effect initialized
+		fxIntVars[idx][2] = 0; // Current position
+		fxIntVars[idx][3] = 1; //increase step 1 / decrease step 0
+		fxIntVars[idx][4] = random(4); //full rainbow / RG only / GB / BR
+
+		fxInitialised[idx] = true; // Effect initialized
 	}
 
 	byte *ptr = &imgData[idx][0];
 	long color, i;
 	for(i=0; i<NUM_PIXELS; i++) {
-		color = hsv2rgb(fxIntVars[idx][3] + fxIntVars[idx][1] * i / NUM_PIXELS,
-			255, 255, fxIntVars[idx][5]);
+		color = hsv2rgb(fxIntVars[idx][2] + fxIntVars[idx][0] * i / NUM_PIXELS,
+			255, 255, fxIntVars[idx][4]);
 		*ptr++ = color >> 16; *ptr++ = color >> 8; *ptr++ = color;
 	}
-	fxIntVars[idx][3] += fxIntVars[idx][2];
+	fxIntVars[idx][2] += fxIntVars[idx][1];
 
 	////Make a bit more interesing by gradually tightening rainbow span size
 	//step in direction
-	if (fxIntVars[idx][4] == 1)
+	if (fxIntVars[idx][3] == 1)
 	{
-		fxIntVars[idx][1]++;
+		fxIntVars[idx][0]++;
 	} else {
-		fxIntVars[idx][1]--;
+		fxIntVars[idx][0]--;
 	}
 	//change direction
-	if (fxIntVars[idx][1] == 2500)
+	if (fxIntVars[idx][0] == 2500)
 	{
-		fxIntVars[idx][4] = 0;
+		fxIntVars[idx][3] = 0;
 	}
-	if (fxIntVars[idx][1] == -1)
+	if (fxIntVars[idx][0] == -1)
 	{
-		fxIntVars[idx][4] = 1;
+		fxIntVars[idx][3] = 1;
 	}		
 }
 
 // Sine wave chase effect
 void ProgramSineWave(byte idx) {
-	if(fxIntVars[idx][0] == 0) { // Initialize effect?
-		fxIntVars[idx][1] = random(3) * 512; //random(1536); // Random hue
+	if(fxInitialised[idx] == false) { // Initialize effect?
+		fxIntVars[idx][0] = random(3) * 512; //random(1536); // Random hue
 		// Number of repetitions (complete loops around color wheel);
 		// any more than 4 per meter just looks too chaotic.
 		// Store as distance around complete belt in half-degree units:
-		fxIntVars[idx][2] = (1 + random(4 * ((NUM_PIXELS + 31) / 32))) * 720;
+		fxIntVars[idx][1] = (1 + random(4 * ((NUM_PIXELS + 31) / 32))) * 720;
 		// Frame-to-frame increment (speed) -- may be positive or negative,
 		// but magnitude shouldn't be so small as to be boring.  It's generally
 		// still less than a full pixel per frame, making motion very smooth.
-		fxIntVars[idx][3] = 4 + random(fxIntVars[idx][1]) / NUM_PIXELS;
+		fxIntVars[idx][2] = 4 + random(fxIntVars[idx][0]) / NUM_PIXELS;
 		// Reverse direction half the time.
-		if(random(2) == 0) fxIntVars[idx][3] = -fxIntVars[idx][3];
-		fxIntVars[idx][4] = 0; // Current position
+		if(random(2) == 0) fxIntVars[idx][2] = -fxIntVars[idx][2];
+		fxIntVars[idx][3] = 0; // Current position
 		//ToDo: Rainbow changing sine
 		//ToDo: Rainbown spread across string sine
-		fxI8Vars[idx][0] = random(2) + 1; //number of half waves per string
-		fxI8Vars[idx][1] = random(2); //still colour or rainbow
-		fxI8Vars[idx][2] = random(4); //full rainbow or lines
-		fxI32Vars[idx][0] = 0; //start of rainbow
+		fxIntVars[idx][4] = random(2) + 1; //number of half waves per string
+		fxIntVars[idx][5] = random(2); //still colour or rainbow
+		fxIntVars[idx][6] = random(4); //full rainbow or lines
+		fxIntVars[idx][7] = 0; //start of rainbow
 
-		fxIntVars[idx][0] = 1; // Effect initialized
+		fxInitialised[idx] = true; // Effect initialized
 	}
 
 	byte *ptr = &imgData[idx][0];
@@ -482,18 +485,18 @@ void ProgramSineWave(byte idx) {
 		//<<<<*/
 
 		//>>> Non-Sine table way - slower, but works! Need fix for above
-		y = sin(PI * (float)fxI8Vars[idx][0] * 0.5 * 
-			(float)(fxIntVars[idx][4] + (float)i) / (float)NUM_PIXELS) * 255.0;
+		y = sin(PI * (float)fxIntVars[idx][4] * 0.5 * 
+			(float)(fxIntVars[idx][3] + (float)i) / (float)NUM_PIXELS) * 255.0;
 
 		color = (y >= 0.0) ?
 			// Peaks of sine wave are white (saturation = 0)
-			color = hsv2rgb(fxIntVars[idx][1]+(fxI32Vars[idx][0]*fxI8Vars[idx][1]), 255 - (int)y, 255, fxI8Vars[idx][2]) :
+			color = hsv2rgb(fxIntVars[idx][0]+(fxIntVars[idx][7]*fxIntVars[idx][5]), 255 - (int)y, 255, fxIntVars[idx][6]) :
 				// troughs are black (level = 0)
-				color = hsv2rgb(fxIntVars[idx][1]+(fxI32Vars[idx][0]*fxI8Vars[idx][1]), 255, 255 + (int)y, fxI8Vars[idx][2]);
+				color = hsv2rgb(fxIntVars[idx][0]+(fxIntVars[idx][7]*fxIntVars[idx][5]), 255, 255 + (int)y, fxIntVars[idx][6]);
 		*ptr++ = color >> 16; *ptr++ = color >> 8; *ptr++ = color;
 	}
-	fxIntVars[idx][4] += fxIntVars[idx][3];
-	fxI32Vars[idx][0]++;
+	fxIntVars[idx][3] += fxIntVars[idx][2];
+	fxIntVars[idx][7]++;
 }
 
 // Data for American-flag-like colors (20 pixels representing
@@ -521,24 +524,21 @@ byte flagTable[]  = {
 void ProgramWavyFlag(byte idx) {
 	long i, sum, s, x;
 	int  idx1, idx2, a, b;
-	if(fxIntVars[idx][0] == 0) { // Initialize effect?
-		fxIntVars[idx][1] = 720 + random(720); // Wavyness
-		fxIntVars[idx][2] = 1;//4 + random(10);    // Wave speed
-		fxIntVars[idx][3] = 200 + random(200); // Wave 'puckeryness'
-		fxIntVars[idx][4] = 0;                 // Current  position
+	if(fxInitialised[idx] == false) { // Initialize effect?
+		fxIntVars[idx][0] = 720 + random(720); // Wavyness
+		fxIntVars[idx][1] = 1;//4 + random(10);    // Wave speed
+		fxIntVars[idx][2] = 200 + random(200); // Wave 'puckeryness'
+		fxIntVars[idx][3] = 0;                 // Current  position
 		
-		frameDelay[idx] = 2; //delay frame count
-		frame[idx] = 0; //delay frame
+		fxFrameDelay[idx] = 2; //delay frame count
+		fxFrameDelayCount[idx] = 0; //delay frame
 
-		fxIntVars[idx][0] = 1;                 // Effect initialized
+		fxInitialised[idx] = true;                 // Effect initialized
 	}
 
-	if (frame[idx] == frameDelay[idx]) { //only do once every delay frames
+	if (fxFrameDelayCount[idx] == fxFrameDelay[idx]) { //only do once every delay frames
 		for(sum=0, i=0; i<NUM_PIXELS-1; i++) {
-			//sum += fxIntVars[idx][3] + fixCos(fxIntVars[idx][4] + fxIntVars[idx][1] *
-			//	i / NUM_PIXELS);
-
-				sum += fxIntVars[idx][3] + (int)(cos((float)fxIntVars[idx][4] + (float)fxIntVars[idx][1] *
+				sum += fxIntVars[idx][2] + (int)(cos((float)fxIntVars[idx][3] + (float)fxIntVars[idx][0] *
 				(float)i / (float)NUM_PIXELS) * 255.0);
 		}
 
@@ -557,18 +557,16 @@ void ProgramWavyFlag(byte idx) {
 			*ptr++ = ((pgm_read_byte(&flagTable[idx1 + 2]) * a) +
 				(pgm_read_byte(&flagTable[idx2 + 2]) * b)) >> 8;
 
-			//s += fxIntVars[idx][3] + fixCos(fxIntVars[idx][4] + fxIntVars[idx][1] *
-			//	i / NUM_PIXELS);
-			s += fxIntVars[idx][3] + (int)(cos((float)fxIntVars[idx][4] + (float)fxIntVars[idx][1] *
+			s += fxIntVars[idx][2] + (int)(cos((float)fxIntVars[idx][3] + (float)fxIntVars[idx][0] *
 				(float)i / (float)NUM_PIXELS) * 255.0);
 		}
 
-		fxIntVars[idx][4] += fxIntVars[idx][2];
-		if(fxIntVars[idx][4] >= 720) fxIntVars[idx][4] -= 720;
+		fxIntVars[idx][3] += fxIntVars[idx][1];
+		if(fxIntVars[idx][3] >= 720) fxIntVars[idx][3] -= 720;
 
-		frame[idx] = 0;
+		fxFrameDelayCount[idx] = 0;
 	} else {
-		frame[idx]++;
+		fxFrameDelayCount[idx]++;
 	}
 }
 
@@ -577,47 +575,47 @@ void ProgramWavyFlag(byte idx) {
 
 // Pulse entire image with solid color
 void ProgramPulse(byte idx) {
-	if(fxIntVars[idx][0] == 0) {
-		fxIntVars[idx][1] = 50; // Pulse ammount min (v)
-		fxIntVars[idx][2] = 250; // Pulse ammount max (v)
-		fxIntVars[idx][3] = random(1536); // Random hue
+	if(fxInitialised[idx] == false) {
+		fxIntVars[idx][0] = 50; // Pulse ammount min (v)
+		fxIntVars[idx][1] = 250; // Pulse ammount max (v)
+		fxIntVars[idx][2] = random(1536); // Random hue
 
-		fxIntVars[idx][4] = fxIntVars[idx][1]; // pulse position 
-		fxIntVars[idx][5] = 1; // 0 = negative, 1 = positive
-		fxIntVars[idx][6] = 2 + random(10); // step value
+		fxIntVars[idx][3] = fxIntVars[idx][0]; // pulse position 
+		fxIntVars[idx][4] = 1; // 0 = negative, 1 = positive
+		fxIntVars[idx][5] = 2 + random(10); // step value
 
-		frameDelay[idx] = 3; //delay frame count
-		frame[idx] = 0; //delay frame
+		fxFrameDelay[idx] = 0; //delay frame count
+		fxFrameDelayCount[idx] = 0; //delay frame
 
-		fxIntVars[idx][0] = 1; // Effect initialized
+		fxInitialised[idx] = true; // Effect initialized
 	}
 
 	byte *ptr = &imgData[idx][0];
 	long color, i;
 
-	if (frame[idx] == frameDelay[idx]) { //only do once every delay frames
+	if (fxFrameDelayCount[idx] == fxFrameDelay[idx]) { //only do once every delay frames
 		for(i=0; i<NUM_PIXELS; i++) {
-			color = hsv2rgb(fxIntVars[idx][3], 255, fxIntVars[idx][4], 0);
+			color = hsv2rgb(fxIntVars[idx][2], 255, fxIntVars[idx][3], 0);
 			*ptr++ = color >> 16; *ptr++ = color >> 8; *ptr++ = color;
 		}
 
-		if (fxIntVars[idx][5] == 0) {
-			fxIntVars[idx][4] = fxIntVars[idx][4] - fxIntVars[idx][6];
-			if (fxIntVars[idx][4] <= fxIntVars[idx][1]) {
-				fxIntVars[idx][5] = 1;
-				fxIntVars[idx][4] = fxIntVars[idx][1];
+		if (fxIntVars[idx][4] == 0) {
+			fxIntVars[idx][3] = fxIntVars[idx][3] - fxIntVars[idx][5];
+			if (fxIntVars[idx][3] <= fxIntVars[idx][0]) {
+				fxIntVars[idx][4] = 1;
+				fxIntVars[idx][3] = fxIntVars[idx][0];
 			}
-		} else if (fxIntVars[idx][5] == 1) {
-			fxIntVars[idx][4] = fxIntVars[idx][4] + fxIntVars[idx][6];
-			if (fxIntVars[idx][4] >= fxIntVars[idx][2]) {
-				fxIntVars[idx][5] = 0;
-				fxIntVars[idx][4] = fxIntVars[idx][2];
+		} else if (fxIntVars[idx][4] == 1) {
+			fxIntVars[idx][3] = fxIntVars[idx][3] + fxIntVars[idx][5];
+			if (fxIntVars[idx][3] >= fxIntVars[idx][1]) {
+				fxIntVars[idx][4] = 0;
+				fxIntVars[idx][3] = fxIntVars[idx][1];
 			}
 		}
 
-		frame[idx] = 0;
+		fxFrameDelayCount[idx] = 0;
 	} else {
-		frame[idx]++;
+		fxFrameDelayCount[idx]++;
 	}
 }
 
@@ -625,43 +623,43 @@ void ProgramPulse(byte idx) {
 //with modifications around movement by MEO
 //ToDo: use forthcoming visual echo to interpolate between frames for smoother movement
 void ProgramFlames(byte idx){
-	if(fxIntVars[idx][0] == 0) { // Initialize effect?
-		fxIntVars[idx][1] = 101; //intensity Hi
-		fxIntVars[idx][2] = 0; //intensity Lo
-		fxIntVars[idx][3] = 101; //transition Hi
-		fxIntVars[idx][4] = 0; //transition Lo
-		fxIntVars[idx][5] = 1; //sub pattern/variation
-		fxIntVars[idx][6] = 255; //Colour 1 R
-		fxIntVars[idx][7] = 0; //Colour 1 G //redo these, probably, as single vars
-		fxIntVars[idx][8] = 0; //Colour 1 B
-		fxIntVars[idx][9] = 255; //Colour 2 R
-		fxIntVars[idx][10] = 145; //Colour 2 G
-		fxIntVars[idx][11] = 0; //Colour 2 B
+	if(fxInitialised[idx] == false) { // Initialize effect?
+		fxIntVars[idx][0] = 101; //intensity Hi
+		fxIntVars[idx][1] = 0; //intensity Lo
+		fxIntVars[idx][2] = 101; //transition Hi
+		fxIntVars[idx][3] = 0; //transition Lo
+		fxIntVars[idx][4] = 1; //sub pattern/variation
+		fxIntVars[idx][5] = 255; //Colour 1 R
+		fxIntVars[idx][6] = 0; //Colour 1 G //ToDo: redo these as single vars
+		fxIntVars[idx][7] = 0; //Colour 1 B
+		fxIntVars[idx][8] = 255; //Colour 2 R
+		fxIntVars[idx][9] = 145; //Colour 2 G
+		fxIntVars[idx][10] = 0; //Colour 2 B
 
-		frameDelay[idx] = 4; //delay frame count
-		frame[idx] = 0; //delay frame
+		fxFrameDelay[idx] = 4; //delay frame count
+		fxFrameDelayCount[idx] = 0; //delay frame
 
-		fxIntVars[idx][0] = 1; //end initialise
+		fxInitialised[idx] = true; //end initialise
 	}
 
 	byte *ptr = &imgData[idx][0];
 
-	if (frame[idx] == frameDelay[idx]) //only do once every delay frames
+	if (fxFrameDelayCount[idx] == fxFrameDelay[idx]) //only do once every delay frames
 	{
 		int transition, intensity;
 		byte r, g, b;
 		for(int i = 0; i < NUM_PIXELS; i++) {
-			transition = (int)random(fxIntVars[idx][4], fxIntVars[idx][3]);
-			intensity = (int)random(fxIntVars[idx][2], fxIntVars[idx][3]);
+			transition = (int)random(fxIntVars[idx][3], fxIntVars[idx][2]);
+			intensity = (int)random(fxIntVars[idx][1], fxIntVars[idx][2]);
 
-			r = ((fxIntVars[idx][9]-fxIntVars[idx][6])*transition/100+fxIntVars[idx][6])*intensity/100;
-			g = ((fxIntVars[idx][10]-fxIntVars[idx][7])*transition/100+fxIntVars[idx][7])*intensity/100;
-			b = ((fxIntVars[idx][11]-fxIntVars[idx][8])*transition/100+fxIntVars[idx][8])*intensity/100;
+			r = ((fxIntVars[idx][8]-fxIntVars[idx][5])*transition/100+fxIntVars[idx][5])*intensity/100;
+			g = ((fxIntVars[idx][9]-fxIntVars[idx][6])*transition/100+fxIntVars[idx][6])*intensity/100;
+			b = ((fxIntVars[idx][10]-fxIntVars[idx][7])*transition/100+fxIntVars[idx][7])*intensity/100;
 			*ptr++ = r; *ptr++ = g; *ptr++ = b;
 		}	
-		frame[idx] = 0;
+		fxFrameDelayCount[idx] = 0;
 	} else {
-		frame[idx]++;
+		fxFrameDelayCount[idx]++;
 	}
 }
 
@@ -675,17 +673,17 @@ void ProgramFlames(byte idx){
 //		e.g. fstep 0 -> 400 = 1 0 1; 400 -> = 0 1 0; 0 -> 400 = 0 1 0; 400 -> 0 = 1 0 1
 
 void ProgramPhasing(byte idx) {
-	if(fxIntVars[idx][0] == 0) {
+	if(fxInitialised[idx] == false) {
+		fxIntVars[idx][0] = 1500; //size
 		fxIntVars[idx][1] = 128; // Wave center
 		fxIntVars[idx][2] = 127; // Wave width (center+ width, and center - width must not pass 255 or 0)
 		fxIntVars[idx][3] = 1; //direction (1 forward / 0 backwards)
 		fxIntVars[idx][4] = random(18); //sub-pattern / variation
 		fxIntVars[idx][5] = 0; //turn - sub-sub-variation
-		fxI32Vars[idx][0] = 1500; //size
-		fxI32Vars[idx][1] = 0;  //start step (fStep in 2012 version) - freq modifier
-		fxI32Vars[idx][2] = 0; //pStep in 2012 version - phase modifier
-		fxIntVars[idx][0] = 1; // Effect initialized
+		fxIntVars[idx][6] = 0;  //start step (fStep in 2012 version) - freq modifier
+		fxIntVars[idx][7] = 0; //pStep in 2012 version - phase modifier
 
+		fxInitialised[idx] = true; // Effect initialized
 	}
 
 	byte *ptr = &imgData[idx][0];
@@ -710,15 +708,15 @@ void ProgramPhasing(byte idx) {
 		phaseR_ = 0;
 		phaseG_ = 2.0 * PI /3.0;
 		phaseB_ = 4.0 * PI /3.0;
-		frequencyR_ = (float)fxI32Vars[idx][1] / (float)fxI32Vars[idx][0];
-		frequencyG_ = (float)fxI32Vars[idx][1] / (float)fxI32Vars[idx][0];
-		frequencyB_ = (float)fxI32Vars[idx][1] / (float)fxI32Vars[idx][0];
+		frequencyR_ = (float)fxIntVars[idx][6] / (float)fxIntVars[idx][0];
+		frequencyG_ = (float)fxIntVars[idx][6] / (float)fxIntVars[idx][0];
+		frequencyB_ = (float)fxIntVars[idx][6] / (float)fxIntVars[idx][0];
 		redOff_ = false; grnOff_ = false; bluOff_ = false;
 		break;
 	case 1: // subtly changing pastel
 		phaseR_ = 0;
-		phaseG_ = (2.0 * PI /360.0) * (float)fxI32Vars[idx][2];
-		phaseB_ = (4.0 * PI /360.0) * (float)fxI32Vars[idx][2];
+		phaseG_ = (2.0 * PI /360.0) * (float)fxIntVars[idx][7];
+		phaseB_ = (4.0 * PI /360.0) * (float)fxIntVars[idx][7];
 		frequencyR_ = 1.666;
 		frequencyG_ = 2.666;
 		frequencyB_ = 3.666;
@@ -728,36 +726,36 @@ void ProgramPhasing(byte idx) {
 		phaseR_ = 1.0;
 		phaseG_ = 1.0;
 		phaseB_ = 1.0;
-		frequencyR_ = (float)fxI32Vars[idx][1] / (float)fxI32Vars[idx][0];
-		frequencyG_ = (float)fxI32Vars[idx][1] / (float)fxI32Vars[idx][0];
-		frequencyB_ = (float)fxI32Vars[idx][1] / (float)fxI32Vars[idx][0];
+		frequencyR_ = (float)fxIntVars[idx][6] / (float)fxIntVars[idx][0];
+		frequencyG_ = (float)fxIntVars[idx][6] / (float)fxIntVars[idx][0];
+		frequencyB_ = (float)fxIntVars[idx][6] / (float)fxIntVars[idx][0];
 		redOff_ = false; grnOff_ = false; bluOff_ = false;
 		break;
 	case 3: //Cyan/Red/White (Cyan 'peak')
 		phaseR_ = 0.0;
 		phaseG_ = 1.0;
 		phaseB_ = 1.0;
-		frequencyR_ = (float)fxI32Vars[idx][1] / (float)fxI32Vars[idx][0];
-		frequencyG_ = (float)fxI32Vars[idx][1] / (float)fxI32Vars[idx][0];
-		frequencyB_ = (float)fxI32Vars[idx][1] / (float)fxI32Vars[idx][0];
+		frequencyR_ = (float)fxIntVars[idx][6] / (float)fxIntVars[idx][0];
+		frequencyG_ = (float)fxIntVars[idx][6] / (float)fxIntVars[idx][0];
+		frequencyB_ = (float)fxIntVars[idx][6] / (float)fxIntVars[idx][0];
 		redOff_ = false; grnOff_ = false; bluOff_ = false;
 		break;
 	case 4: //Magenta/Green/White (Magenta 'peak')
 		phaseR_ = 1.0;
 		phaseG_ = 0.0;
 		phaseB_ = 1.0;
-		frequencyR_ = (float)fxI32Vars[idx][1] / (float)fxI32Vars[idx][0];
-		frequencyG_ = (float)fxI32Vars[idx][1] / (float)fxI32Vars[idx][0];
-		frequencyB_ = (float)fxI32Vars[idx][1] / (float)fxI32Vars[idx][0];
+		frequencyR_ = (float)fxIntVars[idx][6] / (float)fxIntVars[idx][0];
+		frequencyG_ = (float)fxIntVars[idx][6] / (float)fxIntVars[idx][0];
+		frequencyB_ = (float)fxIntVars[idx][6] / (float)fxIntVars[idx][0];
 		redOff_ = false; grnOff_ = false; bluOff_ = false;
 		break;
 	case 5: //Yellow/Blue/White (Yellow 'peak')
 		phaseR_ = 1.0;
 		phaseG_ = 1.0;
 		phaseB_ = 0.0;
-		frequencyR_ = (float)fxI32Vars[idx][1] / (float)fxI32Vars[idx][0];
-		frequencyG_ = (float)fxI32Vars[idx][1] / (float)fxI32Vars[idx][0];
-		frequencyB_ = (float)fxI32Vars[idx][1] / (float)fxI32Vars[idx][0];
+		frequencyR_ = (float)fxIntVars[idx][6] / (float)fxIntVars[idx][0];
+		frequencyG_ = (float)fxIntVars[idx][6] / (float)fxIntVars[idx][0];
+		frequencyB_ = (float)fxIntVars[idx][6] / (float)fxIntVars[idx][0];
 		redOff_ = false; grnOff_ = false; bluOff_ = false;
 		break;
 	case 6: //Single primary (White 'peak') - 'White' is a touch complementary color
@@ -768,23 +766,23 @@ void ProgramPhasing(byte idx) {
 			phaseG_ = 1.0;
 			phaseB_ = 1.0;
 			frequencyR_ = 0.0;
-			frequencyG_ = (float)fxI32Vars[idx][1] / (float)fxI32Vars[idx][0]; //0 would make white/yellow
-			frequencyB_ = (float)fxI32Vars[idx][1] / (float)fxI32Vars[idx][0]; //0 would make white/weak mageneta
+			frequencyG_ = (float)fxIntVars[idx][6] / (float)fxIntVars[idx][0]; //0 would make white/yellow
+			frequencyB_ = (float)fxIntVars[idx][6] / (float)fxIntVars[idx][0]; //0 would make white/weak mageneta
 			break;
 		case 1: //Green
 			phaseR_ = 1.0;
 			phaseG_ = 0.0;
 			phaseB_ = 1.0;
-			frequencyR_ = (float)fxI32Vars[idx][1] / (float)fxI32Vars[idx][0];
+			frequencyR_ = (float)fxIntVars[idx][6] / (float)fxIntVars[idx][0];
 			frequencyG_ = 0.0;
-			frequencyB_ = (float)fxI32Vars[idx][1] / (float)fxI32Vars[idx][0];
+			frequencyB_ = (float)fxIntVars[idx][6] / (float)fxIntVars[idx][0];
 			break;
 		case 2: //Blue
 			phaseR_ = 1.0;
 			phaseG_ = 1.0;
 			phaseB_ = 0.0;
-			frequencyR_ = (float)fxI32Vars[idx][1] / (float)fxI32Vars[idx][0];
-			frequencyG_ = (float)fxI32Vars[idx][1] / (float)fxI32Vars[idx][0];
+			frequencyR_ = (float)fxIntVars[idx][6] / (float)fxIntVars[idx][0];
+			frequencyG_ = (float)fxIntVars[idx][6] / (float)fxIntVars[idx][0];
 			frequencyB_ = 0.0;
 			break;
 		}
@@ -795,51 +793,51 @@ void ProgramPhasing(byte idx) {
 		{
 		case 0: //these sub variations are all pretty similar
 			phaseR_ = 0;
-			phaseG_ = (2.0 * PI /360.0) * (float)fxI32Vars[idx][2];
-			phaseB_ = (4.0 * PI /360.0) * (float)fxI32Vars[idx][2];
-			frequencyR_ = (float)fxI32Vars[idx][1] / (float)fxI32Vars[idx][0];
-			frequencyG_ = (float)fxI32Vars[idx][1] / (float)fxI32Vars[idx][0];
-			frequencyB_ = (float)fxI32Vars[idx][1] / (float)fxI32Vars[idx][0];
+			phaseG_ = (2.0 * PI /360.0) * (float)fxIntVars[idx][7];
+			phaseB_ = (4.0 * PI /360.0) * (float)fxIntVars[idx][7];
+			frequencyR_ = (float)fxIntVars[idx][6] / (float)fxIntVars[idx][0];
+			frequencyG_ = (float)fxIntVars[idx][6] / (float)fxIntVars[idx][0];
+			frequencyB_ = (float)fxIntVars[idx][6] / (float)fxIntVars[idx][0];
 			break;
 		case 2:
-			phaseR_ = (4.0 * PI /360.0) * (float)fxI32Vars[idx][2];
+			phaseR_ = (4.0 * PI /360.0) * (float)fxIntVars[idx][7];
 			phaseG_ = 0;
-			phaseB_ = (2.0 * PI /360.0) * (float)fxI32Vars[idx][2];
-			frequencyR_ = (float)fxI32Vars[idx][1] / (float)fxI32Vars[idx][0];
-			frequencyG_ = (float)fxI32Vars[idx][1] / (float)fxI32Vars[idx][0];
-			frequencyB_ = (float)fxI32Vars[idx][1] / (float)fxI32Vars[idx][0];
+			phaseB_ = (2.0 * PI /360.0) * (float)fxIntVars[idx][7];
+			frequencyR_ = (float)fxIntVars[idx][6] / (float)fxIntVars[idx][0];
+			frequencyG_ = (float)fxIntVars[idx][6] / (float)fxIntVars[idx][0];
+			frequencyB_ = (float)fxIntVars[idx][6] / (float)fxIntVars[idx][0];
 			break;
 		case 4:
-			phaseR_ = (2.0 * PI /360.0) * (float)fxI32Vars[idx][2];
-			phaseG_ = (4.0 * PI /360.0) * (float)fxI32Vars[idx][2];
+			phaseR_ = (2.0 * PI /360.0) * (float)fxIntVars[idx][7];
+			phaseG_ = (4.0 * PI /360.0) * (float)fxIntVars[idx][7];
 			phaseB_ = 0;
-			frequencyR_ = (float)fxI32Vars[idx][1] / (float)fxI32Vars[idx][0];
-			frequencyG_ = (float)fxI32Vars[idx][1] / (float)fxI32Vars[idx][0];
-			frequencyB_ = (float)fxI32Vars[idx][1] / (float)fxI32Vars[idx][0];
+			frequencyR_ = (float)fxIntVars[idx][6] / (float)fxIntVars[idx][0];
+			frequencyG_ = (float)fxIntVars[idx][6] / (float)fxIntVars[idx][0];
+			frequencyB_ = (float)fxIntVars[idx][6] / (float)fxIntVars[idx][0];
 			break;
 		case 1:
 			phaseR_ = 0;
-			phaseG_ = (4.0 * PI /360.0) * (float)fxI32Vars[idx][2];
-			phaseB_ = (2.0 * PI /360.0) * (float)fxI32Vars[idx][2];
-			frequencyR_ = (float)fxI32Vars[idx][1] / (float)fxI32Vars[idx][0];
-			frequencyG_ = (float)fxI32Vars[idx][1] / (float)fxI32Vars[idx][0];
-			frequencyB_ = (float)fxI32Vars[idx][1] / (float)fxI32Vars[idx][0];
+			phaseG_ = (4.0 * PI /360.0) * (float)fxIntVars[idx][7];
+			phaseB_ = (2.0 * PI /360.0) * (float)fxIntVars[idx][7];
+			frequencyR_ = (float)fxIntVars[idx][6] / (float)fxIntVars[idx][0];
+			frequencyG_ = (float)fxIntVars[idx][6] / (float)fxIntVars[idx][0];
+			frequencyB_ = (float)fxIntVars[idx][6] / (float)fxIntVars[idx][0];
 			break;
 		case 3:
-			phaseR_ = (4.0 * PI /360) * (float)fxI32Vars[idx][2];
-			phaseG_ = (2.0 * PI /360) * (float)fxI32Vars[idx][2];
+			phaseR_ = (4.0 * PI /360) * (float)fxIntVars[idx][7];
+			phaseG_ = (2.0 * PI /360) * (float)fxIntVars[idx][7];
 			phaseB_ = 0;
-			frequencyR_ = (float)fxI32Vars[idx][1] / (float)fxI32Vars[idx][0];
-			frequencyG_ = (float)fxI32Vars[idx][1] / (float)fxI32Vars[idx][0];
-			frequencyB_ = (float)fxI32Vars[idx][1] / (float)fxI32Vars[idx][0];
+			frequencyR_ = (float)fxIntVars[idx][6] / (float)fxIntVars[idx][0];
+			frequencyG_ = (float)fxIntVars[idx][6] / (float)fxIntVars[idx][0];
+			frequencyB_ = (float)fxIntVars[idx][6] / (float)fxIntVars[idx][0];
 			break;
 		case 5:
-			phaseR_ = (2.0 * PI /360) * (float)fxI32Vars[idx][2];
+			phaseR_ = (2.0 * PI /360) * (float)fxIntVars[idx][7];
 			phaseG_ = 0;
-			phaseB_ = (4.0 * PI /360) * (float)fxI32Vars[idx][2];
-			frequencyR_ = (float)fxI32Vars[idx][1] / (float)fxI32Vars[idx][0];
-			frequencyG_ = (float)fxI32Vars[idx][1] / (float)fxI32Vars[idx][0];
-			frequencyB_ = (float)fxI32Vars[idx][1] / (float)fxI32Vars[idx][0];
+			phaseB_ = (4.0 * PI /360) * (float)fxIntVars[idx][7];
+			frequencyR_ = (float)fxIntVars[idx][6] / (float)fxIntVars[idx][0];
+			frequencyG_ = (float)fxIntVars[idx][6] / (float)fxIntVars[idx][0];
+			frequencyB_ = (float)fxIntVars[idx][6] / (float)fxIntVars[idx][0];
 			break;
 		}
 		redOff_ = false; grnOff_ = false; bluOff_ = false;
@@ -848,62 +846,62 @@ void ProgramPhasing(byte idx) {
 		phaseR_ = 0.0;
 		phaseG_ = 2.0 * PI /3.0;
 		phaseB_ = 4.0 * PI /3.0;
-		frequencyR_ = (float)fxI32Vars[idx][1] / (float)fxI32Vars[idx][0];
-		frequencyG_ = (float)fxI32Vars[idx][1] / (float)fxI32Vars[idx][0];
-		frequencyB_ = (float)fxI32Vars[idx][1] / (float)fxI32Vars[idx][0];
+		frequencyR_ = (float)fxIntVars[idx][6] / (float)fxIntVars[idx][0];
+		frequencyG_ = (float)fxIntVars[idx][6] / (float)fxIntVars[idx][0];
+		frequencyB_ = (float)fxIntVars[idx][6] / (float)fxIntVars[idx][0];
 		redOff_ = false; grnOff_ = true; bluOff_ = false;
 		break;
 	case 9: //Green/Red/Yellow (Green 'peak')
 		phaseR_ = 0.0;
 		phaseG_ = 2.0 * PI /3.0;
 		phaseB_ = 4.0 * PI /3.0;
-		frequencyR_ = (float)fxI32Vars[idx][1] / (float)fxI32Vars[idx][0];
-		frequencyG_ = (float)fxI32Vars[idx][1] / (float)fxI32Vars[idx][0];
-		frequencyB_ = (float)fxI32Vars[idx][1] / (float)fxI32Vars[idx][0];
+		frequencyR_ = (float)fxIntVars[idx][6] / (float)fxIntVars[idx][0];
+		frequencyG_ = (float)fxIntVars[idx][6] / (float)fxIntVars[idx][0];
+		frequencyB_ = (float)fxIntVars[idx][6] / (float)fxIntVars[idx][0];
 		redOff_ = false; grnOff_ = false; bluOff_ = true;
 		break;
 	case 10: //Blue/Green/Cyan (Blue 'peak')
 		phaseR_ = 0.0;
 		phaseG_ = 4.0 * PI /3.0;
 		phaseB_ = 2.0 * PI /3.0;
-		frequencyR_ = (float)fxI32Vars[idx][1] / (float)fxI32Vars[idx][0];
-		frequencyG_ = (float)fxI32Vars[idx][1] / (float)fxI32Vars[idx][0];
-		frequencyB_ = (float)fxI32Vars[idx][1] / (float)fxI32Vars[idx][0];
+		frequencyR_ = (float)fxIntVars[idx][6] / (float)fxIntVars[idx][0];
+		frequencyG_ = (float)fxIntVars[idx][6] / (float)fxIntVars[idx][0];
+		frequencyB_ = (float)fxIntVars[idx][6] / (float)fxIntVars[idx][0];
 		redOff_ = true; grnOff_ = false; bluOff_ = false;
 		break;
 	case 11: //Cyan/Green/Red/Magenta slightly askew (Cyan 'peak')
 		phaseR_ = 0.0;
 		phaseG_ = 2.0 * PI /3.0;
 		phaseB_ = 1.0;
-		frequencyR_ = (float)fxI32Vars[idx][1] / (float)fxI32Vars[idx][0];
-		frequencyG_ = (float)fxI32Vars[idx][1] / (float)fxI32Vars[idx][0];
-		frequencyB_ = (float)fxI32Vars[idx][1] / (float)fxI32Vars[idx][0];
+		frequencyR_ = (float)fxIntVars[idx][6] / (float)fxIntVars[idx][0];
+		frequencyG_ = (float)fxIntVars[idx][6] / (float)fxIntVars[idx][0];
+		frequencyB_ = (float)fxIntVars[idx][6] / (float)fxIntVars[idx][0];
 		redOff_ = false; grnOff_ = false; bluOff_ = false;
 		break;
 	case 12: //Magenta/Green/Blue/Cyan slightly askew (Magenta 'peak')
 		phaseR_ = 1.0;
 		phaseG_ = 0.0;
 		phaseB_ = 2.0 * PI /3.0;
-		frequencyR_ = (float)fxI32Vars[idx][1] / (float)fxI32Vars[idx][0];
-		frequencyG_ = (float)fxI32Vars[idx][1] / (float)fxI32Vars[idx][0];
-		frequencyB_ = (float)fxI32Vars[idx][1] / (float)fxI32Vars[idx][0];
+		frequencyR_ = (float)fxIntVars[idx][6] / (float)fxIntVars[idx][0];
+		frequencyG_ = (float)fxIntVars[idx][6] / (float)fxIntVars[idx][0];
+		frequencyB_ = (float)fxIntVars[idx][6] / (float)fxIntVars[idx][0];
 		redOff_ = false; grnOff_ = false; bluOff_ = false;
 		break;
 	case 13: //Yellow/Blue/Red/Cyan slightly askew (Yellow 'peak')
 		phaseR_ = 2.0 * PI /3.0;
 		phaseG_ = 1.0;
 		phaseB_ = 0.0;
-		frequencyR_ = (float)fxI32Vars[idx][1] / (float)fxI32Vars[idx][0];
-		frequencyG_ = (float)fxI32Vars[idx][1] / (float)fxI32Vars[idx][0];
-		frequencyB_ = (float)fxI32Vars[idx][1] / (float)fxI32Vars[idx][0];
+		frequencyR_ = (float)fxIntVars[idx][6] / (float)fxIntVars[idx][0];
+		frequencyG_ = (float)fxIntVars[idx][6] / (float)fxIntVars[idx][0];
+		frequencyB_ = (float)fxIntVars[idx][6] / (float)fxIntVars[idx][0];
 		redOff_ = false; grnOff_ = false; bluOff_ = false;
 		break;
 	case 14:  //Green/Red/Yellow slightly askew (Green 'peak')
 		phaseR_ = 0.0;
 		phaseG_ = 2.0 * PI /3.0;
 		phaseB_ = 4.0 * PI /3.0;
-		frequencyR_ = (float)fxI32Vars[idx][1] / (float)fxI32Vars[idx][0];
-		frequencyG_ = (float)fxI32Vars[idx][1] / (float)fxI32Vars[idx][0];
+		frequencyR_ = (float)fxIntVars[idx][6] / (float)fxIntVars[idx][0];
+		frequencyG_ = (float)fxIntVars[idx][6] / (float)fxIntVars[idx][0];
 		frequencyB_ = 0.0;
 		redOff_ = false; grnOff_ = false; bluOff_ = false;
 		break;
@@ -912,17 +910,17 @@ void ProgramPhasing(byte idx) {
 		phaseG_ = 0.0;
 		phaseB_ = 2.0 * PI /3.0;
 		frequencyR_ = 0.0;
-		frequencyG_ = (float)fxI32Vars[idx][1] / (float)fxI32Vars[idx][0];
-		frequencyB_ = (float)fxI32Vars[idx][1] / (float)fxI32Vars[idx][0];
+		frequencyG_ = (float)fxIntVars[idx][6] / (float)fxIntVars[idx][0];
+		frequencyB_ = (float)fxIntVars[idx][6] / (float)fxIntVars[idx][0];
 		redOff_ = false; grnOff_ = false; bluOff_ = false;
 		break;
 	case 16:  //Red/Blue/Magenta slightly askew (Magenta 'peak')
 		phaseR_ = 2.0 * PI /3.0;
 		phaseG_ = 4.0 * PI /3.0;
 		phaseB_ = 0.0;
-		frequencyR_ = (float)fxI32Vars[idx][1] / (float)fxI32Vars[idx][0];
+		frequencyR_ = (float)fxIntVars[idx][6] / (float)fxIntVars[idx][0];
 		frequencyG_ = 0.0;
-		frequencyB_ = (float)fxI32Vars[idx][1] / (float)fxI32Vars[idx][0];
+		frequencyB_ = (float)fxIntVars[idx][6] / (float)fxIntVars[idx][0];
 		redOff_ = false; grnOff_ = false; bluOff_ = false;
 		break;
 	default: //nothing - a still pastel rainbow
@@ -964,26 +962,26 @@ void ProgramPhasing(byte idx) {
 	//step in direction
 	if (fxIntVars[idx][3] == 1)
 	{
-		fxI32Vars[idx][1]++;
+		fxIntVars[idx][6]++;
 	} else {
-		fxI32Vars[idx][1]--;
+		fxIntVars[idx][6]--;
 	}
 
 	//set direction: 1 2 .. 98 .. 400 .. 98 .. 2 1
-	if (fxI32Vars[idx][1] == 400)
+	if (fxIntVars[idx][6] == 400)
 	{
 		fxIntVars[idx][3] = 0;
 	}
-	if (fxI32Vars[idx][1] == -1)
+	if (fxIntVars[idx][6] == -1)
 	{
 		fxIntVars[idx][3] = 1;
 		fxIntVars[idx][5]++;
 	}
 
-	fxI32Vars[idx][2]++;
-	if (fxI32Vars[idx][2] == 800)
+	fxIntVars[idx][7]++;
+	if (fxIntVars[idx][7] == 800)
 	{
-		fxI32Vars[idx][2] = 0;
+		fxIntVars[idx][7] = 0;
 	}
 }
 
@@ -993,8 +991,9 @@ void ProgramPhasing(byte idx) {
 // Note: currently only works with 50, 100 or 160 pixels (easy to add more)
 //To Do - see if can use my code to generate non repeating random nos on the fly
 void ProgramRandomStrobe(byte idx) {
-	if(fxIntVars[idx][0] == 0) {
-		fxIntVars[idx][1] = random(0); // sub pattern / variation
+	if(fxInitialised[idx] == false) {
+		fxIntVars[idx][0] = 0; // Current position
+		fxIntVars[idx][1] = random(10); // sub pattern / variation
 		fxIntVars[idx][2] = 0; // step through effect
 		// Number of repetitions (complete loops around color wheel); any
 		// more than 4 per meter just looks too chaotic and un-rainbow-like.
@@ -1007,11 +1006,11 @@ void ProgramRandomStrobe(byte idx) {
 		// Reverse speed and hue shift direction half the time.
 		if(random(2) == 0) fxIntVars[idx][3] = -fxIntVars[idx][3];
 		if(random(2) == 0) fxIntVars[idx][4] = -fxIntVars[idx][4];
-		fxIntVars[idx][5] = 0; // Current position
+
 		// ToDo: make number of bulbs at a time work
 		// ToDo: slow down, by having bulbs stay same for a number of frames
 
-		fxIntVars[idx][0] = 1; // Effect initialized
+		fxInitialised[idx] = true; // Effect initialized
 	}
 
 	byte *ptr = &imgData[idx][0];
@@ -1101,7 +1100,7 @@ void ProgramRandomStrobe(byte idx) {
 		if (GetRandom(i, NUM_PIXELS) == fxIntVars[idx][2]) {
 			if (rainbowFlash_) {
 				int color;
-				color = hsv2rgb(fxIntVars[idx][5] + fxIntVars[idx][3] 
+				color = hsv2rgb(fxIntVars[idx][0] + fxIntVars[idx][3] 
 					* i / NUM_PIXELS, 255, 255, 0);
 				*ptr++ = color >> 16; *ptr++ = color >> 8; *ptr++ = color;
 			} else {
@@ -1110,7 +1109,7 @@ void ProgramRandomStrobe(byte idx) {
 		} else {
 			if (rainbowMain_)
 			{
-				color = hsv2rgb((fxIntVars[idx][5] + fxIntVars[idx][3] 
+				color = hsv2rgb((fxIntVars[idx][0] + fxIntVars[idx][3] 
 					* i / NUM_PIXELS) + 768, 255, 100, 0); //768 so main is 180 deg from flash
 				*ptr++ = color >> 16; *ptr++ = color >> 8; *ptr++ = color;
 			} else {
@@ -1127,7 +1126,7 @@ void ProgramRandomStrobe(byte idx) {
 		fxIntVars[idx][2] = 0;
 	}
 
-	fxIntVars[idx][5] += fxIntVars[idx][4];
+	fxIntVars[idx][0] += fxIntVars[idx][4];
 }
 //// Code for non repeating random nos
 //ToDo: reset after each time the last bulb is reached, so doesn't repeat pattern
@@ -1152,10 +1151,10 @@ void ProgramRandomStrobe(byte idx) {
 ////// <<<
 
 void ProgramSimplexNoise(byte idx) {
-	if(fxIntVars[idx][0] == 0) {
-		fxIntVars[idx][1] = random(7); //sub pattern/variation
+	if(fxInitialised[idx] == false) {
+		fxIntVars[idx][0] = random(7); //sub pattern/variation
 		fxFltVars[idx][0] = 0.0; //yOffset
-		fxIntVars[idx][0] = 1; // Effect initialized
+		fxInitialised[idx] = true; // Effect initialized
 	}
 
 	float bulbArray_red[NUM_PIXELS + 1];
@@ -1171,7 +1170,7 @@ void ProgramSimplexNoise(byte idx) {
 	float timeinc_;
 	//float yoffset_;
 
-	switch (fxIntVars[idx][1])
+	switch (fxIntVars[idx][0])
 	{
 	case 0:
 		rMult_ = 1.0;
@@ -1325,43 +1324,44 @@ void ProgramSimplexNoise(byte idx) {
 //   based on G35 Xmas lights code by Paul Martis (http://www.digitalmisery.com)
 //  (more interesting patterns by MEO)
 void ProgramChaser(byte idx) {
-	if(fxIntVars[idx][0] == 0) {
-		fxI8Vars[idx][0] = 1; //count step
-		fxI16Vars[idx][0] = 0; //sequence step
+	if(fxInitialised[idx] == false) {
+		fxIntVars[idx][0] = 0; //sequence step
 		fxIntVars[idx][1] = random(3); //chaser pattern
 		fxIntVars[idx][2] = 1; //number of pixels in a row with specific color
 		fxIntVars[idx][3] = random(1536); //color starting point
-		frameDelay[idx] = 3; //delay frame count
-		frame[idx] = 0; //delay frame
+		fxIntVars[idx][4] = 1; //count step
 
-		fxIntVars[idx][0] = 1; // Effect initialized
+		fxFrameDelay[idx] = 3; //delay frame count
+		fxFrameDelayCount[idx] = 0; //delay frame
+
+		fxInitialised[idx] = true; // Effect initialized
 	}
 
-	if (frame[idx] == frameDelay[idx]) //only do once every delay frames
+	if (fxFrameDelayCount[idx] == fxFrameDelay[idx]) //only do once every delay frames
 	{
 		switch (fxIntVars[idx][1])
 		{
 		case 0:
-			FillChaserSeq(fxI8Vars[idx][0], fxI16Vars[idx][0], fxIntVars[idx][2], fxIntVars[idx][3], ChaseRotateAnalogic45, idx);
+			FillChaserSeq(fxIntVars[idx][4], fxIntVars[idx][0], fxIntVars[idx][2], fxIntVars[idx][3], ChaseRotateAnalogic45, idx);
 			break;
 		case 1:
-			FillChaserSeq(fxI8Vars[idx][0], fxI16Vars[idx][0], fxIntVars[idx][2], fxIntVars[idx][3], ChaseRotateAccentedAnalogic30, idx);
+			FillChaserSeq(fxIntVars[idx][4], fxIntVars[idx][0], fxIntVars[idx][2], fxIntVars[idx][3], ChaseRotateAccentedAnalogic30, idx);
 			break;
 		case 2:
-			FillChaserSeq(fxI8Vars[idx][0], fxI16Vars[idx][0], fxIntVars[idx][2], fxIntVars[idx][3], ChaseRotateCompliment, idx);
+			FillChaserSeq(fxIntVars[idx][4], fxIntVars[idx][0], fxIntVars[idx][2], fxIntVars[idx][3], ChaseRotateCompliment, idx);
 			break;
 		}
-		if (fxI8Vars[idx][0] < NUM_PIXELS)
+		if (fxIntVars[idx][4] < NUM_PIXELS)
 		{
-			++fxI8Vars[idx][0];
+			++fxIntVars[idx][4];
 		}
 		else
 		{
-			++fxI16Vars[idx][0];
+			++fxIntVars[idx][4];
 		}	
-		frame[idx] = 0;
+		fxFrameDelayCount[idx] = 0;
 	} else {
-		frame[idx]++;
+		fxFrameDelayCount[idx]++;
 	}
 }
 
@@ -1372,13 +1372,9 @@ void ProgramChaser(byte idx) {
 //       Can't really tell at 60Hz, but still it's bugging me, and I'd like to fix it
 //ToDo: as with strobe fade - fade also moves through rainbow - not too noticable, as only 28 steps - but would be nice to offset
 void ProgramLarsonScanner(byte idx){
-
-	if(fxIntVars[idx][0] == 0) { // Initialize effect?
+	if(fxInitialised[idx] == false) { // Initialize effect?
+		fxIntVars[idx][0] = NUM_PIXELS; //position - start one loop in, so can count backwards
 		fxIntVars[idx][1] = random(6) * 256; //Colour on color wheel
-		fxI32Vars[idx][0] = 0; // eye position
-		fxI8Vars[idx][0] = 0; //direction (0/1)
-		frameDelay[idx] = 0; //delay frame count
-		frame[idx] = 0; //delay frame
 
 		// Frame-to-frame hue increment (speed) -- may be positive or negative,
 		// but magnitude shouldn't be so small as to be boring.  It's generally
@@ -1388,38 +1384,39 @@ void ProgramLarsonScanner(byte idx){
 		if(random(2) == 0) fxIntVars[idx][1] = -fxIntVars[idx][1];
 		if(random(2) == 0) fxIntVars[idx][2] = -fxIntVars[idx][2];
 		fxIntVars[idx][3] = 0; // Current position
-		fxI8Vars[idx][1] = random(4); // full rainbow or one of the lines
-		fxI8Vars[idx][2] = random(2); //whether to rainbow, or fixed colour
+		fxIntVars[idx][4] = random(4); // full rainbow or one of the lines
+		fxIntVars[idx][5] = random(2); //whether to rainbow, or fixed colour
+		fxIntVars[idx][6]= 5; //repeats per string
 
-		fxI32Vars[idx][1] = NUM_PIXELS; //position - start one loop in, so can count backwards
-		fxI8Vars[idx][3]= 5; //repeats per string
+		fxFrameDelay[idx] = 0; //delay frame count
+		fxFrameDelayCount[idx] = 0; //delay frame
 
-		fxIntVars[idx][0] = 1; //end initialise
+		fxInitialised[idx] = true; //end initialise
 	}
 
 	byte *ptr = &imgData[idx][0];
 
-	if (frame[idx] == frameDelay[idx]) {//only do once every delay frames
+	if (fxFrameDelayCount[idx] == fxFrameDelay[idx]) {//only do once every delay frames
 		long color, offset;
 		for(int i = 0; i < NUM_PIXELS; i++) {
 			//do backwards trail offset, so brighter overrides dimmer when overlap
 			color = hsv2rgb(0,0,0,0); //background
 			for (offset = 27; offset >= 0; offset--) { // works with GetSmoothFade9, but overkill
 				
-				if (fxI8Vars[idx][3] == 1) { //one per string
-					if (i == GetSimpleOscillatePos(fxI32Vars[idx][1] - offset, 99, 99)) {
-						if (fxI8Vars[idx][2] == 1) { //rainbow
+				if (fxIntVars[idx][6] == 1) { //one per string
+					if (i == GetSimpleOscillatePos(fxIntVars[idx][0] - offset, 99, 99)) {
+						if (fxIntVars[idx][5] == 1) { //rainbow
 							color = hsv2rgb((fxIntVars[idx][3] + fxIntVars[idx][1] 
-								* i / NUM_PIXELS) - offset, 255, GetSmoothFade27(offset), fxI8Vars[idx][1]);
+								* i / NUM_PIXELS) - offset, 255, GetSmoothFade27(offset), fxIntVars[idx][4]);
 						} else { //fixed color
 							color = hsv2rgb(fxIntVars[idx][1], 255, GetSmoothFade27(offset), 0);
 						}
 					} 
 				} else { //5 per string - ToDo: would be good to generalise this 1/2/4/5/10 per string
-					if (i%20 == GetSimpleOscillatePos(fxI32Vars[idx][1] - offset, 19, 19)) {
-						if (fxI8Vars[idx][2] == 1) { //rainbow
+					if (i%20 == GetSimpleOscillatePos(fxIntVars[idx][0] - offset, 19, 19)) {
+						if (fxIntVars[idx][5] == 1) { //rainbow
 							color = hsv2rgb((fxIntVars[idx][3] + fxIntVars[idx][1] 
-								* i / NUM_PIXELS) - offset, 255, GetSmoothFade9(offset), fxI8Vars[idx][1]);
+								* i / NUM_PIXELS) - offset, 255, GetSmoothFade9(offset), fxIntVars[idx][4]);
 						} else { //fixed color
 							color = hsv2rgb(fxIntVars[idx][1], 255, GetSmoothFade9(offset), 0);
 						}
@@ -1433,11 +1430,11 @@ void ProgramLarsonScanner(byte idx){
 		fxIntVars[idx][3] += fxIntVars[idx][2];
 
 		//increase oscillate step
-		fxI32Vars[idx][1]++;
+		fxIntVars[idx][0]++;
 
-		frame[idx] = 0;
+		fxFrameDelayCount[idx] = 0;
 	} else {
-		frame[idx]++;
+		fxFrameDelayCount[idx]++;
 	}
 }
 
@@ -1447,13 +1444,9 @@ void ProgramLarsonScanner(byte idx){
 //ToDo: merge with Random Strobe, with Fade as a flag
 //ToDo: as with Larson - fade also moves through rainbow - not too noticable, as only 28 steps - but would be nice to offset
 void ProgramStrobeFade(byte idx){
-	if(fxIntVars[idx][0] == 0) { // Initialize effect?
+	if(fxInitialised[idx] == false) { // Initialize effect?
+		fxIntVars[idx][0] = 0; // eye position
 		fxIntVars[idx][1] = random(3) * 512; //Colour on color wheel
-		fxI32Vars[idx][0] = 0; // eye position
-		fxI8Vars[idx][0] = 0; //direction (0/1)
-		frameDelay[idx] = 0; //delay frame count
-		frame[idx] = 0; //delay frame
-
 		// Frame-to-frame hue increment (speed) -- may be positive or negative,
 		// but magnitude shouldn't be so small as to be boring.  It's generally
 		// still less than a full pixel per frame, making motion very smooth.
@@ -1462,46 +1455,50 @@ void ProgramStrobeFade(byte idx){
 		if(random(2) == 0) fxIntVars[idx][1] = -fxIntVars[idx][1];
 		if(random(2) == 0) fxIntVars[idx][2] = -fxIntVars[idx][2];
 		fxIntVars[idx][3] = 0; // Current position
-		fxI8Vars[idx][1] = random(4); // full rainbow or one of the lines
-		fxI8Vars[idx][2] = random(3); //whether fixed colour, rainbow, or rainbow change color fade
+		fxIntVars[idx][4] = random(4); //full rainbow or one of the lines
+		fxIntVars[idx][5] = random(3); //whether fixed colour, rainbow, or rainbow change color fade
 
-		fxIntVars[idx][0] = 1; //end initialise
+		fxFrameDelay[idx] = 0; //delay frame count
+		fxFrameDelayCount[idx] = 0; //delay frame
+
+		fxInitialised[idx] = true; //end initialise
 	}
 
 	byte *ptr = &imgData[idx][0];
 
-	if (frame[idx] == frameDelay[idx]) {//only do once every delay frames
+	if (fxFrameDelayCount[idx] == fxFrameDelay[idx]) {//only do once every delay frames
 		long color, offset;
 
 		for(int i = 0; i < NUM_PIXELS; i++) {
-			offset = (NUM_PIXELS + fxI32Vars[idx][0] - GetRandom(i, NUM_PIXELS)) % NUM_PIXELS;
-			if (fxI8Vars[idx][2] == 0) {
+			offset = (NUM_PIXELS + fxIntVars[idx][0] - GetRandom(i, NUM_PIXELS)) % NUM_PIXELS;
+			if (fxIntVars[idx][5] == 0) {
 				color = hsv2rgb(fxIntVars[idx][1], 255, GetSmoothFade27(offset), 0);
-			} else if (fxI8Vars[idx][2] == 1) {//rainbow - the complex color term is due to needing to fade in the same colour - otherwise the fade carry  on rotating through colours
+			} else if (fxIntVars[idx][5] == 1) {//rainbow - the complex color term is due to needing to fade in the same colour - otherwise the fade carry  on rotating through colours
 				color = hsv2rgb(((fxIntVars[idx][3] + fxIntVars[idx][1] 
-					* i / NUM_PIXELS) - (offset * fxIntVars[idx][2])) % 1536, 255, GetSmoothFade27(offset), fxI8Vars[idx][1]);
+					* i / NUM_PIXELS) - (offset * fxIntVars[idx][2])) % 1536, 255, GetSmoothFade27(offset), fxIntVars[idx][4]);
 			} else { //fade changes colour
 				color = hsv2rgb(((fxIntVars[idx][3] + fxIntVars[idx][1] 
-					* i / NUM_PIXELS) + (offset * fxIntVars[idx][2]) * 10) % 1536, 255, GetSmoothFade27(offset), fxI8Vars[idx][1]);
+					* i / NUM_PIXELS) + (offset * fxIntVars[idx][2]) * 10) % 1536, 255, GetSmoothFade27(offset), fxIntVars[idx][4]);
 			}
 			*ptr++ = color >> 16; *ptr++ = color >> 8; *ptr++ = color;
 		}
 
 		//increase/decrease eye position
-		fxI32Vars[idx][0]++;
+		fxIntVars[idx][0]++;
 
 		//for rainbow version - move through rainbow
 		fxIntVars[idx][3] += fxIntVars[idx][2];
-		frame[idx] = 0;
+		fxFrameDelayCount[idx] = 0;
 	} else {
-		frame[idx]++;
+		fxFrameDelayCount[idx]++;
 	}
 }
 
 
 // Fade in/out a random 20% of bulbs
+// ToDo: doesn't quite work properly. Old should fade out as new fades in.
 void ProgramOldFashioned(byte idx) {
-	if(fxIntVars[idx][0] == 0) {
+	if(fxInitialised[idx] == false) {
 		fxIntVars[idx][1] = 20; // Number of bulbs at a time
 		fxIntVars[idx][2] = 120; // Frames to stay at full level
 		fxIntVars[idx][3] = random(1536); // Random hue
@@ -1509,18 +1506,18 @@ void ProgramOldFashioned(byte idx) {
 		fxIntVars[idx][5] = 0; //frame count
 		fxIntVars[idx][6] = 0; //which bulbs at a time count
 
-		frameDelay[idx] = 0; //delay frame count
-		frame[idx] = 0; //delay frame
+		fxFrameDelay[idx] = 0; //delay frame count
+		fxFrameDelayCount[idx] = 0; //delay frame
 
-//ToDo: different colour each bulb / differet color each set / all white
+//ToDo: different colour each bulb / different color each set / all white
 
-		fxIntVars[idx][0] = 1; // Effect initialized
+		fxInitialised[idx] = true; // Effect initialized
 	}
 
 	byte *ptr = &imgData[idx][0];
 	long color, i, j, outLo, outHi, inLo, inHi;
 
-	if (frame[idx] == frameDelay[idx]) { //only do once every delay frames
+	if (fxFrameDelayCount[idx] == fxFrameDelay[idx]) { //only do once every delay frames
 
 
 		for(i=0; i<NUM_PIXELS; i++) {
@@ -1566,9 +1563,9 @@ void ProgramOldFashioned(byte idx) {
 			fxIntVars[idx][6] = 0;
 		}
 
-		frame[idx] = 0;
+		fxFrameDelayCount[idx] = 0;
 	} else {
-		frame[idx]++;
+		fxFrameDelayCount[idx]++;
 	}
 }
 
@@ -1579,46 +1576,44 @@ void ProgramOldFashioned(byte idx) {
 //				  rotate in opps directions
 //				  no gap so colour add up at peak
 void ProgramRotatingCircles(byte idx) {
-	if(fxIntVars[idx][0] == 0) {
-		fxIntVars[idx][1] = random(1536); // Random hue
-		fxIntVars[idx][2] = (fxIntVars[idx][1] + 768) % 1536; // complementary hue
-		fxIntVars[idx][3] = 0; //frame count
-		fxIntVars[idx][4] = 0;
-		fxIntVars[idx][5] = 0; 
-		fxIntVars[idx][6] = 0; //which bulbs at a time count
+	if(fxInitialised[idx] == false) {
+		fxIntVars[idx][0] = random(1536); // Random hue
+		fxIntVars[idx][1] = (fxIntVars[idx][1] + 768) % 1536; // complementary hue
+		fxIntVars[idx][2] = 0; //frame count
 
-		frameDelay[idx] = 2; //delay frame count
-		frame[idx] = 0; //delay frame
+		fxFrameDelay[idx] = 2; //delay frame count
+		fxFrameDelayCount[idx] = 0; //delay frame
 
-		fxIntVars[idx][0] = 1; // Effect initialized
+		fxInitialised[idx] = true; // Effect initialized
 	}
 
 	byte *ptr = &imgData[idx][0];
 	long color;
 
-	if (frame[idx] == frameDelay[idx]) { //only do once every delay frames
+	if (fxFrameDelayCount[idx] == fxFrameDelay[idx]) { //only do once every delay frames
 		for(int i=0; i<NUM_PIXELS; i++) {
 			if (i % 2 == 1) {
-				color = hsv2rgb(fxIntVars[idx][1], 255, GetSmoothFade9((i+fxIntVars[idx][3]) % 9), 0);
+				color = hsv2rgb(fxIntVars[idx][0], 255, GetSmoothFade9((i+fxIntVars[idx][2]) % 9), 0);
 			} else {
-				color = hsv2rgb(fxIntVars[idx][2], 255, GetSmoothFade9((18-i+fxIntVars[idx][3]) % 9), 0);
+				color = hsv2rgb(fxIntVars[idx][1], 255, GetSmoothFade9((18-i+fxIntVars[idx][2]) % 9), 0);
 			}
 
 			*ptr++ = color >> 16; *ptr++ = color >> 8; *ptr++ = color;
 		}
 
-		fxIntVars[idx][3]++;
+		fxIntVars[idx][2]++;
 
-		frame[idx] = 0;
+		fxFrameDelayCount[idx] = 0;
 	} else {
-		frame[idx]++;
+		fxFrameDelayCount[idx]++;
 	}
 }
 
 
 // ToDo: Rainbow - with white shooting in opps direction
 void ProgramRainbowWhite(byte idx) {
-	if(fxIntVars[idx][0] == 0) { // Initialize effect?
+	if(fxInitialised[idx] == false) { // Initialize effect?
+		fxIntVars[idx][0] = 0; //white position
 		// Number of repetitions (complete loops around color wheel); any
 		// more than 4 per meter just looks too chaotic and un-rainbow-like.
 		// Store as hue 'distance' around complete belt:
@@ -1633,9 +1628,8 @@ void ProgramRainbowWhite(byte idx) {
 		fxIntVars[idx][3] = 0; // Current position
 		fxIntVars[idx][4] = 1; //increase step 1 / decrease step 0
 		fxIntVars[idx][5] = random(4); //full rainbow / RG only / GB / BR
-		fxIntVars[idx][6] = 0; //white position
 
-		fxIntVars[idx][0] = 1; // Effect initialized
+		fxInitialised[idx] = true; // Effect initialized
 	}
 
 	byte *ptr = &imgData[idx][0];
@@ -1649,22 +1643,22 @@ void ProgramRainbowWhite(byte idx) {
 
 
 	//note: in reverse fade order, so that brightest 'wins' when can be either
-		if (i == GetSimpleOscillatePos(fxIntVars[idx][6] - 3, 25, 20)) {
+		if (i == GetSimpleOscillatePos(fxIntVars[idx][0] - 3, 25, 20)) {
 			color = hsv2rgb(fxIntVars[idx][3] + fxIntVars[idx][1] * i / NUM_PIXELS,
 			127, 31, fxIntVars[idx][5]);
 		}
 
-		if (i == GetSimpleOscillatePos(fxIntVars[idx][6] - 2, 25, 20)) {
+		if (i == GetSimpleOscillatePos(fxIntVars[idx][0] - 2, 25, 20)) {
 			color = hsv2rgb(fxIntVars[idx][3] + fxIntVars[idx][1] * i / NUM_PIXELS,
 			63, 63, fxIntVars[idx][5]);
 		}
 
-		if (i == GetSimpleOscillatePos(fxIntVars[idx][6] - 1, 25, 20)) {
+		if (i == GetSimpleOscillatePos(fxIntVars[idx][0] - 1, 25, 20)) {
 			color = hsv2rgb(fxIntVars[idx][3] + fxIntVars[idx][1] * i / NUM_PIXELS,
 			31, 127, fxIntVars[idx][5]);
 		}
 
-		if (i == GetSimpleOscillatePos(fxIntVars[idx][6], 25, 20)) {
+		if (i == GetSimpleOscillatePos(fxIntVars[idx][0], 25, 20)) {
 			color = hsv2rgb(fxIntVars[idx][3] + fxIntVars[idx][1] * i / NUM_PIXELS,
 			15, 255, fxIntVars[idx][5]);
 		}
@@ -1691,84 +1685,100 @@ void ProgramRainbowWhite(byte idx) {
 		fxIntVars[idx][4] = 1;
 	}
 	
-	fxIntVars[idx][6]++; //white position
+	fxIntVars[idx][0]++; //white position
 }
 
 //Random splash - ToDo: add ripple effect
 //Programmed by MEO from scratch
 void ProgramRandomSplash(byte idx){
 	int bulbArray;
-	if(fxIntVars[idx][0] == 0) { // Initialize effect?
-		fxIntVars[idx][1] = random(3) * 512; //Colour on color wheel
-		//fxI32Vars[idx][0] = 0; // eye position
-		//fxI8Vars[idx][0] = 0; //direction (0/1)
-		frameDelay[idx] = 0; //delay frame count
-		frame[idx] = 0; //delay frame
-
-		fxI32Vars[idx][1] = 0; //overall frame/time
-		fxI32Vars[idx][2] = 0; //current bulb - random version (bulb to splash from)
-		fxI32Vars[idx][3] = 0; //time for a new bulb to splash
-		fxI32Vars[idx][4] = 60; //splash every x frames
-		fxI32Vars[idx][5] = 0; //current bulb
+	if(fxInitialised[idx] == false) { // Initialize effect?
+		fxIntVars[idx][0] = random(3) * 512; //Colour on color wheel
+		fxIntVars[idx][1] = 0; //add bulb to splash (not yet randomised)
+		fxIntVars[idx][2] = 0; //add frame for the new bulb to splash
+		fxIntVars[idx][3] = 0; //add bulb to splash (random version)
+		fxIntVars[idx][4] = 50; //a new splash every x frames
 
 		for (bulbArray = 0;bulbArray < 10 ; bulbArray++ ){
-			fxArrVars[idx][0][bulbArray] = GetRandom(bulbArray, NUM_PIXELS); //last 10 bulbs flashes
-			fxArrVars[idx][1][bulbArray] = bulbArray * fxI32Vars[idx][4]; //last 10 start frames
+			fxArrVars[idx][0][bulbArray] = -1; //reset cache bulbs
+			fxArrVars[idx][1][bulbArray] = -1; //reset cache frames
 		}
+		fxFrameCount[idx] = 0; //overall frame/time
+		fxFrameDelay[idx] = 0; //delay frame count
+		fxFrameDelayCount[idx] = 0; //delay frame
 
-		fxIntVars[idx][0] = 1; //end initialise
+		fxInitialised[idx] = true; //end initialise
 	}
 
 	byte *ptr = &imgData[idx][0];
 
-	fxI32Vars[idx][2] = GetRandom(fxI32Vars[idx][5], NUM_PIXELS);
+	//make code easier to read
+	long newBulbNonRand, newFrame, newBulbRand, splashDelay;
+	newBulbNonRand = fxIntVars[idx][1];
+	newFrame = fxIntVars[idx][2];
+	newBulbRand = fxIntVars[idx][3];
+	splashDelay = fxIntVars[idx][4];
 
-	if (frame[idx] == frameDelay[idx]) {//only do once every delay frames
+	newBulbRand = GetRandom(newBulbNonRand, NUM_PIXELS);
+
+	if (fxFrameDelayCount[idx] == fxFrameDelay[idx]) {//only do once every delay frames
 		long color, splash;
-
 
 		for(int i = 0; i < NUM_PIXELS; i++) {
 			splash = 0;
-			for (bulbArray = 0;bulbArray < 1 ; bulbArray++ ){ // 0; <10
-				//To Do: total up all interactions before setting ptr
-				// (e.g. a bulb may score 7 from one ripple, but 15 from a nearby - make 23 (8+16 -1 )
-				//ToDo: first 10 will all be '0', causing initial brightness
-				splash = splash + GetSplash(fxI32Vars[idx][1], i, fxArrVars[idx][1][bulbArray], fxArrVars[idx][0][bulbArray], 0.25, 0.9);
-			}
+			//To Do: total up all 10 buffered interactions before setting ptr. The commented out code doesn't work, and slows things down a lot
+
+			//Test code
+			//Serial.println(""); Serial.print(i);Serial.print(", ");Serial.print(fxFrameCount[idx]);Serial.print(" : ");
+
+			//for (bulbArray = 0; bulbArray < 10 ; bulbArray++ ){ // 0; <10; ++
+				//if (fxArrVars[idx][0][bulbArray] >= 0){ //ignore cache items not yet set
+					//splash = splash + GetSplash(i, fxFrameCount[idx], fxArrVars[idx][0][bulbArray], fxArrVars[idx][1][bulbArray], 0.25, 0.9);
+					splash = GetSplash(i, fxFrameCount[idx], fxArrVars[idx][0][0], fxArrVars[idx][1][0], 0.66, 0.9);
+					//Test code
+					//Serial.print(fxArrVars[idx][0][bulbArray]);Serial.print(", ");Serial.print(fxArrVars[idx][1][bulbArray]);Serial.print(", "), Serial.print(splash), Serial.print("; ");
+				//}
+			//}
 			if (splash > 255){
 				splash = 255;
 			}
-			color = hsv2rgb(fxIntVars[idx][1], 255 - splash, splash, 0);
 
+			color = hsv2rgb(fxIntVars[idx][0], 255 - splash, splash, 0);
 			*ptr++ = color >> 16; *ptr++ = color >> 8; *ptr++ = color;
 		}
 
-
-		if ((fxI32Vars[idx][1] % fxI32Vars[idx][4]) == 0){ //splash every two seconds
-			fxI32Vars[idx][3] = fxI32Vars[idx][1];
-			fxI32Vars[idx][5]++;
+		if ((fxFrameCount[idx] % splashDelay) == 0){ //new splash every fxI32Vars[idx][4] frames
+			newFrame = fxFrameCount[idx];
+			newBulbNonRand++;
 
 			//insert newest flash at start, and move rest along
-			for (bulbArray = 0; bulbArray < 9 ; bulbArray++) {
-				fxArrVars[idx][0][bulbArray + 1] = fxArrVars[idx][0][bulbArray];
-				fxArrVars[idx][1][bulbArray + 1] = fxArrVars[idx][1][bulbArray];
+			//if (fxFrameCount[idx] > splashDelay * 9) {//first 10 setup already in initialisation
+			for (bulbArray = 8; bulbArray >= 0 ; bulbArray--) {
+				fxArrVars[idx][0][bulbArray + 1] = fxArrVars[idx][0][bulbArray]; //shift bulbs in cache
+				fxArrVars[idx][1][bulbArray + 1] = fxArrVars[idx][1][bulbArray]; //shift frames in cache
 			}
-			fxArrVars[idx][0][0] = fxI32Vars[idx][2];
-			fxArrVars[idx][1][0] = fxI32Vars[idx][3];
+			fxArrVars[idx][0][0] = newBulbRand; // insert new bulb into cache
+			fxArrVars[idx][1][0] = newFrame; // insert new frame into cache
+			//}
 		}
 
 		//increase overall frame counter
-		fxI32Vars[idx][1]++;
+		fxFrameCount[idx]++;
 
 		//reset at end of bulbs;
-		if (fxI32Vars[idx][5] == NUM_PIXELS)
+		if (newBulbNonRand == NUM_PIXELS)
 		{
-			fxI32Vars[idx][5] = 0;
+			newBulbNonRand = 0;
 		}
-
 	} else {
-		frame[idx]++;
+		fxFrameDelayCount[idx]++;
 	}
+
+	//put friendly vars back
+	fxIntVars[idx][1] = newBulbNonRand;
+	fxIntVars[idx][2] = newFrame;
+	fxIntVars[idx][3] = newBulbRand;
+	fxIntVars[idx][4] = splashDelay;
 }
 
 
@@ -2210,7 +2220,7 @@ long GetSimpleOscillatePos(long t, long a, long b) {
 timStep++;*/
 
 //info for a splash effect - to do: ripple?
-long GetSplash(long frameOut, long bulbOut, long frameStart, long bulbStart, float velocity, float damping) {
+long GetSplash(long bulbOut, long frameOut, long bulbStart, long frameStart, float velocity, float damping) {
 	float amplitudeOut; //the return value before adjustment
 	long frameRelative; //relative time, i.e. time into the effect
 	float distance; // distance effect has travelled on one side
