@@ -11,8 +11,6 @@ Programmed for the Due - so 100+ bulbs and fast frame rates now possible! */
 
 /* ToDo: Patterns Ideas
 
-- Standard old fashioned lights twinkle. A random 25% fade on in 2 seconds, and stay of for 10 seconds and then fade off
-
 - rainbow fade: (https://www.youtube.com/watch?v=xTkiNIJkWrY   end of http://www.youtube.com/watch?v=9wZhDc0PnWg)
   primary/secondary colours from 255 to 0 brightness before next colour
 
@@ -85,9 +83,11 @@ some future expansion if I'm ever foolish enough to attempt that. */
 #define NUM_PIXELS 100
 #define FRAMES_PER_SECOND 60
 #define FADE_FRAMES 256   //number of frames to crossfade within
-#define STAY_FRAMES 2048 //number of frames to show a program - if multiple of half num pixels, then some programs won't run into each other (eg random strobe fade)
+#define STAY_FRAMES 10240 //number of frames to show a program - if multiple of half num pixels, then some programs won't run into each other (eg random strobe fade)
 #define MAX_LEVEL 256 //max R,G,B or S, V levels (note: need to subtract one to make 0 based)
 #define MAX_LEVEL0 (MAX_LEVEL - 1)
+
+#define PI 3.14159265
 
 // Simplex Noise
 //(inspired by happyinmotion: http://happyinmotion.livejournal.com/278357.html)
@@ -154,14 +154,14 @@ byte imgData[2][NUM_PIXELS * 3],	// Data for 2 pixelStrings worth of imagery
 	backImgIdx = 0,					// Index of 'back' image (always 0 or 1)
 	fxIdx[3];						// Effect # for back & front images + alpha
 bool fxInitialised[3];			// Whether to set initialisation variables, or already fxInitialised
-int fxIntVars[3][15],				// Effect instance variables (explained later)
+int fxIntVars[3][11],				// Effect instance variables (explained later)
 	fxArrVars[3][2][10],			// MEO: 2 x Array
 	fxFrameCount[3],				// MEO: current overall frame count of single effect
 	fxFrameDelay[3],			// MEO: if too fast - can set number of frames to pause
 	fxFrameDelayCount[3],		// MEO: counter for fxFrameDelay
 	tCounter   = -1,				// Countdown to next transition
 	transitionTime;					// Duration (in frames) of current transition
-float fxFltVars[3][5];				// MEO: float variables
+float fxFltVars[3][1];				// MEO: float variables
 
 // function prototypes, leave these be :)
 void ProgramSolidColor(byte idx);		//pburgess
@@ -202,15 +202,15 @@ char fixCos(int angle);
 // each of these appears later in this file.  Just a few to start with...
 // simply append new ones to the appropriate list here:
 void (*renderEffect[])(byte) = {
-	ProgramSolidColor,
+	//ProgramSolidColor,
 	ProgramRotatingRainbow,
 	ProgramSineWave, //affected by fixSin/fixCos issue - temp fixed by using proper Sin
-	ProgramWavyFlag, //affected by fixSin/fixCos issue -temp fixed by using proper Cos
-	ProgramPulse,
+	//ProgramWavyFlag, //affected by fixSin/fixCos issue -temp fixed by using proper Cos
+	//ProgramPulse,
 	ProgramPhasing,
 	ProgramSimplexNoise,
-	ProgramRandomStrobe,
-	ProgramFlames,
+	//ProgramRandomStrobe,
+	//ProgramFlames},
 	ProgramChaser,
 	ProgramLarsonScanner,
 	ProgramOldFashioned,
@@ -642,8 +642,6 @@ void ProgramFlames(byte idx){
 }
 
 //MEO Effects...
-
-#define PI 3.14159265
 
 // Color phasing (inspired by: http://krazydad.com/tutorials/makecolors.php)
 //ToDo: re-implement 'turn' from pattern 9
@@ -1474,20 +1472,20 @@ void ProgramStrobeFade(byte idx){
 
 
 // Fade in/out a random 20% of bulbs
-// ToDo: doesn't quite work properly. Old should fade out as new fades in.
 void ProgramOldFashioned(byte idx) {
 	if(fxInitialised[idx] == false) {
-		fxIntVars[idx][1] = 20; // Number of bulbs at a time
-		fxIntVars[idx][2] = 120; // Frames to stay at full level
-		fxIntVars[idx][3] = random(1536); // Random hue
+		fxIntVars[idx][0] = 20; // Number of bulbs at a time
+		fxIntVars[idx][1] = 600; // Frames to stay at full level
+		fxIntVars[idx][2] = 0; //hue - old colour
+		fxIntVars[idx][3] = random(1536); // Random hue (new colour)
 		fxIntVars[idx][4] = 0; // fade position 
 		fxIntVars[idx][5] = 0; //frame count
 		fxIntVars[idx][6] = 0; //which bulbs at a time count
 
+		//ToDo: add color level, so can start off from black
+
 		fxFrameDelay[idx] = 0; //delay frame count
 		fxFrameDelayCount[idx] = 0; //delay frame
-
-//ToDo: different colour each bulb / different color each set / all white
 
 		fxInitialised[idx] = true; // Effect initialized
 	}
@@ -1503,23 +1501,23 @@ void ProgramOldFashioned(byte idx) {
 			rBulb = GetRandom(i, NUM_PIXELS); //for non-repeating random
 			//rBulb = i; // for sequential
 
-			outLo = (NUM_PIXELS + (fxIntVars[idx][6] * fxIntVars[idx][1]) - fxIntVars[idx][1]) % NUM_PIXELS;
-			outHi = (NUM_PIXELS + (fxIntVars[idx][6] * fxIntVars[idx][1]) - 1) % NUM_PIXELS;
-			inLo = (NUM_PIXELS + (fxIntVars[idx][6] * fxIntVars[idx][1])) % NUM_PIXELS;
-			inHi = (NUM_PIXELS + (fxIntVars[idx][6] * fxIntVars[idx][1]) + fxIntVars[idx][1] - 1) % NUM_PIXELS;
+			outLo = (NUM_PIXELS + (fxIntVars[idx][6] * fxIntVars[idx][0]) - fxIntVars[idx][0]) % NUM_PIXELS;
+			outHi = (NUM_PIXELS + (fxIntVars[idx][6] * fxIntVars[idx][0]) - 1) % NUM_PIXELS;
+			inLo = (NUM_PIXELS + (fxIntVars[idx][6] * fxIntVars[idx][0])) % NUM_PIXELS;
+			inHi = (NUM_PIXELS + (fxIntVars[idx][6] * fxIntVars[idx][0]) + fxIntVars[idx][0] - 1) % NUM_PIXELS;
 
 			color = hsv2rgb(fxIntVars[idx][3], 255, 0, 0); //default off
 			if ((rBulb >= inLo) && (rBulb <= inHi)) {
 				color = hsv2rgb(fxIntVars[idx][3], 255, getGamma(fxIntVars[idx][4]), 0); //fade in new set
 			} else if ((rBulb >= outLo) && (rBulb <= outHi)) {
-				color = hsv2rgb(fxIntVars[idx][3], 255, 255 - getGamma(fxIntVars[idx][4]), 0);//fade out last set
+				color = hsv2rgb(fxIntVars[idx][2], 255, 255 - getGamma(fxIntVars[idx][4]), 0);//fade out last set
 			}
 
 			*ptr++ = color >> 16; *ptr++ = color >> 8; *ptr++ = color;
 		}
 
 		//fade counter - if brighness level < 255 AND frame count == 0
-		if ((fxIntVars[idx][4] < 255) && (fxIntVars[idx][7] == 0)) {
+		if ((fxIntVars[idx][4] < 255) && (fxIntVars[idx][5] == 0)) {
 			fxIntVars[idx][4]++; //increase brightness (decrease brightness old)
 		}
 
@@ -1530,14 +1528,17 @@ void ProgramOldFashioned(byte idx) {
 		}
 
 		//start over, with new bulbs - if frame count == frames to stay at full level
-		if (fxIntVars[idx][5] == fxIntVars[idx][2]) {
+		if (fxIntVars[idx][5] == fxIntVars[idx][1]) {
 			fxIntVars[idx][5] = 0; //reset frame count
 			fxIntVars[idx][4] = 0; //reset brightness
-			fxIntVars[idx][6] = fxIntVars[idx][8]++; // go to next set of bulbs
+			fxIntVars[idx][6] = fxIntVars[idx][6]++; // go to next set of bulbs
+
+			fxIntVars[idx][2] = fxIntVars[idx][3]; //save last colour
+			fxIntVars[idx][3] = random(1536); //new colour
 		}
 
 		//start completely over
-		if (fxIntVars[idx][6] >= (NUM_PIXELS / fxIntVars[idx][1])) {
+		if (fxIntVars[idx][6] >= (NUM_PIXELS / fxIntVars[idx][0])) {
 			fxIntVars[idx][6] = 0;
 		}
 
