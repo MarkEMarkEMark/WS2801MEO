@@ -219,7 +219,7 @@ void (*renderEffect[])(byte) = {
 	ProgramStrobeFade,
 	ProgramRandomSplash},
 	(*renderAlpha[])(void)  = {
-		//crossfadeDither,
+		crossfadeDither,
 		crossfadeWipe,
 		crossfadeSimple};
 
@@ -232,7 +232,7 @@ uint32_t last_time;
 
 void setup() {
 	//Timer function re-written for Ardunino Due
-	//startTimer(TC1, 0, TC3_IRQn, 60);
+	startTimer(TC1, 0, TC3_IRQn, 60);
 
 	// Open serial communications and wait for port to open:
 	Serial.begin(115200);
@@ -247,18 +247,6 @@ void setup() {
 	memset(imgData, 0, sizeof(imgData)); // Clear image data
 	fxIntVars[backImgIdx][0] = 1;           // Mark back image as initialized
 
-
-	//MEO Ownedelongs' no timer interrupt fudge
-	last_time = millis();
-
-	//for (int i= 0; i <21;i++ ) {
-	//	Serial.println(GetQuadraticLevel(i, 21, true));
-	//}
-
-	//for (int i = 0; i < 400; i++) {
-	//	Serial.println(GetSimpleOscillatePos(i, 99, 99));
-	//}
-
 	/*long t, b;
 	for (t = 0;t < 200 ;t++ ) {
 		for (b = 0;b < 20 ;b++ ) {
@@ -271,13 +259,6 @@ void setup() {
 void loop() {
 	// Do nothing.  All the work happens in the TC3_Handler() function below,
 	// but we still need loop() here to keep the compiler happy.
-
-	//MEO Ownedelongs' no interrupt fudge
-	if (millis() > last_time + (1000/FRAMES_PER_SECOND) || millis() < last_time) //1000/fps
-	{
-		last_time = millis();
-		Callback();
-	}
 }
 
 // Timer interrupt handler.
@@ -286,14 +267,11 @@ void TC3_Handler() {
   // As parameters use the first two parameters used in startTimer (TC1, 0 in this case)
   TC_GetStatus(TC1, 0);
 
-	//Serial.println("Tick!");
-
   Callback();
 }
 
 //###############################
 
-// Timer interrupt handler.
 void Callback() {
 	// Very first thing here is to issue the pixelString data generated from the
 	// *previous* callback.  It's done this way on purpose because show() is
