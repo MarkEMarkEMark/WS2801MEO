@@ -4,9 +4,6 @@ Programmed for the Due - so 100+ bulbs and fast frame rates now possible! */
 /* ToDo: Functionallity
 	- Frame rate controlled by potentiometer
 	- buttons to change programs / variations / choose random / switch off
-
-	- See if can replace fade table with GetQuadraticLevel function
-
 	- replace common vars with named ones (like current frame, main hue etc)
 
 /* ToDo: Patterns Ideas
@@ -29,13 +26,16 @@ Programmed for the Due - so 100+ bulbs and fast frame rates now possible! */
     r = 201; g = 226; b = 255; //-OVERCAST SKY - 7000
     r = 64; g = 156; b = 255; //-CLEAR BLUE SKY - 20000 
 
+- Candles:
+	gently flickering very warm white (all bulbs flicker differently - flames?)
+
 - standard rainbow at low brightness. Shoot white trail in opps direction
 	- rainbow: hsl2rgb(rainbowcolor, 255, 15) --->
 	- white:   hsl2rgb(rainbowcolor, 0 + fade, (255 - fade) stop at 15)<---
 
 */
 
-// THIS PROGRAM *WILL* *NOT* *WORK* ON REALLY LONG LED STRIPS.  IT USES
+// THIS PROGRAM *WILL* *NOT* *WORK* ON REALLY int LED STRIPS.  IT USES
 // AN INORDINATE AMOUNT OF RAM IN ORDER TO ACHIEVE ITS BUTTERY-SMOOTH
 // ANIMATION.  See the 'strandtest' sketch for a simpler and less RAM-
 // intensive example that can process more LEDs (100+).
@@ -82,8 +82,8 @@ some future expansion if I'm ever foolish enough to attempt that. */
 #define pgm_read_byte(x) (*(x))
 #define NUM_PIXELS 100
 #define FRAMES_PER_SECOND 60
-#define FADE_FRAMES 256   //number of frames to crossfade within
-#define STAY_FRAMES 10240 //number of frames to show a program - if multiple of half num pixels, then some programs won't run into each other (eg random strobe fade)
+#define FADE_FRAMES 512   //number of frames to crossfade within
+#define STAY_FRAMES 5120 //number of frames to show a program - if multiple of half num pixels, then some programs won't run into each other (eg random strobe fade)
 #define MAX_LEVEL 256 //max R,G,B or S, V levels (note: need to subtract one to make 0 based)
 #define MAX_LEVEL0 (MAX_LEVEL - 1)
 
@@ -101,6 +101,10 @@ some future expansion if I'm ever foolish enough to attempt that. */
 int ii, jj, kk, AA[] = {0, 0, 0};
 float uu, vv, ww, ss;
 int TT[] = {0x15, 0x38, 0x32, 0x2c, 0x0d, 0x13, 0x07, 0x2a};
+
+//table of powers for damping used in ProgramRandomSplash [pow(damping, frame) - damping^frame]
+#define damping 0.90
+float dampingTable[100];
 
 
 //	Arduino Due Timer code by Sebastian Vik & cmaglie
@@ -169,6 +173,7 @@ void ProgramRotatingRainbow(byte idx);	//pburgess
 void ProgramSineWave(byte idx);			//pburgess
 void ProgramWavyFlag(byte idx);			//pburgess
 void ProgramPulse(byte idx);			//elmerfud
+void ProgramOff(byte idx);				//MEO
 void ProgramPhasing(byte idx);			//MEO
 void ProgramRandomStrobe(byte idx);		//MEO
 void ProgramSimplexNoise(byte idx);		//MEO & happyinmotion
@@ -182,9 +187,9 @@ void ProgramRainbowWhite(byte idx);		//MEO
 void ProgramRandomSplash(byte idx);		//MEO
 
 // Chaser functions
-void SetChaserColor(uint8_t bulb, long color, byte idx);
+void SetChaserColor(uint8_t bulb, int color, byte idx);
 void FillChaserSeq(uint8_t count, uint16_t sequence,
-                               uint8_t span_size, int startColor, long (*sequence_func)(uint16_t sequence, int startColor), byte idx);
+                               uint8_t span_size, int startColor, int (*sequence_func)(uint16_t sequence, int startColor), byte idx);
 
 // Crossfade functions
 void crossfadeSimple(void);
@@ -194,7 +199,7 @@ void crossfadeDither(void);
 void renderAlpha03(void);
 void callback();
 byte getGamma(byte x);
-long hsv2rgb(long h, byte s, byte v, int wheelLine);
+int hsv2rgb(int h, byte s, byte v, int wheelLine);
 char fixSin(int angle);
 char fixCos(int angle);
 
@@ -202,33 +207,29 @@ char fixCos(int angle);
 // each of these appears later in this file.  Just a few to start with...
 // simply append new ones to the appropriate list here:
 void (*renderEffect[])(byte) = {
-	//ProgramSolidColor,
-	ProgramRotatingRainbow,
-	ProgramSineWave, //affected by fixSin/fixCos issue - temp fixed by using proper Sin
-	//ProgramWavyFlag, //affected by fixSin/fixCos issue -temp fixed by using proper Cos
-	//ProgramPulse,
-	ProgramPhasing,
-	ProgramSimplexNoise,
-	//ProgramRandomStrobe,
-	//ProgramFlames},
-	ProgramChaser,
-	ProgramLarsonScanner,
-	ProgramOldFashioned,
-	ProgramRotatingCircles,
-	ProgramRainbowWhite,
-	ProgramStrobeFade,
-	ProgramRandomSplash},
-	(*renderAlpha[])(void)  = {
-		crossfadeDither,
-		crossfadeWipe,
-		crossfadeSimple};
-
+			ProgramOff,
+			//ProgramSolidColor,
+			ProgramRotatingRainbow,
+			ProgramSineWave, //affected by fixSin/fixCos issue - temp fixed by using proper Sin
+			//ProgramWavyFlag, //affected by fixSin/fixCos issue -temp fixed by using proper Cos
+			//ProgramPulse,
+			ProgramPhasing,
+			ProgramSimplexNoise,
+			//ProgramRandomStrobe,
+			//ProgramFlames,
+			ProgramChaser,
+			ProgramLarsonScanner,
+			ProgramOldFashioned,
+			ProgramRotatingCircles,
+			ProgramRainbowWhite,
+			ProgramStrobeFade,
+			ProgramRandomSplash},
+	  (*renderAlpha[])(void) = {
+			crossfadeDither,
+			crossfadeWipe,
+			crossfadeSimple};
 	
 // ---------------------------------------------------------------------------
-
-//MEO Ownedelongs' no interrupt fudge (http://forums.adafruit.com/viewtopic.php?f=47&t=35738)
-uint32_t last_time;
-
 
 void setup() {
 	//Timer function re-written for Ardunino Due
@@ -245,15 +246,32 @@ void setup() {
 	// Initialize random number generator from a floating analog input.
 	randomSeed(analogRead(0));
 	memset(imgData, 0, sizeof(imgData)); // Clear image data
+
+	fxIdx[0] = 0; //crossfade in from ProgramOff()
+	fxIdx[1] = 0; //crossfade in from ProgramOff()
+
 	fxIntVars[backImgIdx][0] = 1;           // Mark back image as initialized
 
-	/*long t, b;
+	for (int table = 0; table < 100; table++)
+	{
+		dampingTable[table] = pow(damping, table);
+		//Serial.println(dampingTable[table], 5);
+	}
+
+	/*int t, b;
 	for (t = 0;t < 200 ;t++ ) {
 		for (b = 0;b < 20 ;b++ ) {
 			Serial.print(GetSplash(t, b, 15, 9, 1.0, 0.5)); Serial.print("   ");
 		}
 		Serial.println(" ");
 	}*/
+
+	//float q, p;
+	//q = quickPow(0.5, 2);
+	//p = pow(0.5, 2);
+
+	//Serial.print(p); Serial.print("  :  "); Serial.println(q);
+
 }
 
 void loop() {
@@ -328,7 +346,7 @@ void Callback() {
 	tCounter++;
 	if(tCounter == 0) { // Transition start
 		// Randomly pick next image effect and alpha effect indices:
-		fxIdx[frontImgIdx] = random((sizeof(renderEffect) / sizeof(renderEffect[0])));
+		fxIdx[frontImgIdx] = 1 + random((sizeof(renderEffect) / sizeof(renderEffect[0])) - 1); //-1, +1 so that doesn't run ProgramOff()
 		fxIdx[2]           = random((sizeof(renderAlpha)  / sizeof(renderAlpha[0])));
 		transitionTime     = FADE_FRAMES; //random(30, 181); // 0.5 to 3 second transitions
 		fxInitialised[frontImgIdx] = false; // Effect not yet initialized
@@ -354,6 +372,20 @@ void Callback() {
 // been initialized yet.  When the back/front image indexes swap at the end of
 // each transition, the corresponding set of fxIntVars, being keyed to the same
 // indexes, are automatically carried with them.
+
+// Simulate being off, by turn all bulbs to black
+void ProgramOff(byte idx) {
+	// Only needs to be rendered once, when effect is initialized:
+	if(fxInitialised[idx] == false) {
+		byte *ptr = &imgData[idx][0],
+			r = 0, g = 0, b = 0;
+		for(int i=0; i<NUM_PIXELS; i++) {
+			*ptr++ = r; *ptr++ = g; *ptr++ = b;
+		}
+		fxInitialised[idx] = true; // Effect initialized
+	}
+}
+
 
 // Simplest rendering effect: fill entire image with solid color
 void ProgramSolidColor(byte idx) {
@@ -393,7 +425,7 @@ void ProgramRotatingRainbow(byte idx) {
 	}
 
 	byte *ptr = &imgData[idx][0];
-	long color, i;
+	int color, i;
 	for(i=0; i<NUM_PIXELS; i++) {
 		color = hsv2rgb(fxIntVars[idx][2] + fxIntVars[idx][0] * i / NUM_PIXELS,
 			255, 255, fxIntVars[idx][4]);
@@ -447,10 +479,10 @@ void ProgramSineWave(byte idx) {
 
 	byte *ptr = &imgData[idx][0];
 	int  foo;
-	long color, i;
+	int color, i;
 	float y;
 
-	for(long i=0; i<NUM_PIXELS; i++) {
+	for(int i=0; i<NUM_PIXELS; i++) {
 		// Peaks of sine wave are white, troughs are black, mid-range
 		// values are pure hue (100% saturated).
 		//>> Sine table way - need to fix
@@ -500,7 +532,7 @@ byte flagTable[]  = {
 
 // Wavy flag effect
 void ProgramWavyFlag(byte idx) {
-	long i, sum, s, x;
+	int i, sum, s, x;
 	int  idx1, idx2, a, b;
 	if(fxInitialised[idx] == false) { // Initialize effect?
 		fxIntVars[idx][0] = 720 + random(720); // Wavyness
@@ -569,7 +601,7 @@ void ProgramPulse(byte idx) {
 	}
 
 	byte *ptr = &imgData[idx][0];
-	long color, i;
+	int color, i;
 
 	if (fxFrameDelayCount[idx] == fxFrameDelay[idx]) { //only do once every delay frames
 		for(i=0; i<NUM_PIXELS; i++) {
@@ -1362,7 +1394,7 @@ void ProgramLarsonScanner(byte idx){
 		fxIntVars[idx][3] = 0; // Current position
 		fxIntVars[idx][4] = random(4); // full rainbow or one of the lines
 		fxIntVars[idx][5] = random(2); //whether to rainbow, or fixed colour
-		fxIntVars[idx][6]= 5; //repeats per string
+		fxIntVars[idx][6]= 1; //repeats per string
 
 		fxFrameDelay[idx] = 0; //delay frame count
 		fxFrameDelayCount[idx] = 0; //delay frame
@@ -1373,7 +1405,7 @@ void ProgramLarsonScanner(byte idx){
 	byte *ptr = &imgData[idx][0];
 
 	if (fxFrameDelayCount[idx] == fxFrameDelay[idx]) {//only do once every delay frames
-		long color, offset;
+		int color, offset;
 		for(int i = 0; i < NUM_PIXELS; i++) {
 			//do backwards trail offset, so brighter overrides dimmer when overlap
 			color = hsv2rgb(0,0,0,0); //background
@@ -1443,7 +1475,7 @@ void ProgramStrobeFade(byte idx){
 	byte *ptr = &imgData[idx][0];
 
 	if (fxFrameDelayCount[idx] == fxFrameDelay[idx]) {//only do once every delay frames
-		long color, offset;
+		int color, offset;
 
 		for(int i = 0; i < NUM_PIXELS; i++) {
 			offset = (NUM_PIXELS + fxIntVars[idx][0] - GetRandom(i, NUM_PIXELS)) % NUM_PIXELS;
@@ -1491,13 +1523,13 @@ void ProgramOldFashioned(byte idx) {
 	}
 
 	byte *ptr = &imgData[idx][0];
-	long color, i, j, outLo, outHi, inLo, inHi;
+	int color, i, j, outLo, outHi, inLo, inHi;
 
 	if (fxFrameDelayCount[idx] == fxFrameDelay[idx]) { //only do once every delay frames
 
 
 		for(i=0; i<NUM_PIXELS; i++) {
-			long rBulb;
+			int rBulb;
 			rBulb = GetRandom(i, NUM_PIXELS); //for non-repeating random
 			//rBulb = i; // for sequential
 
@@ -1567,7 +1599,7 @@ void ProgramRotatingCircles(byte idx) {
 	}
 
 	byte *ptr = &imgData[idx][0];
-	long color;
+	int color;
 
 	if (fxFrameDelayCount[idx] == fxFrameDelay[idx]) { //only do once every delay frames
 		for(int i=0; i<NUM_PIXELS; i++) {
@@ -1612,7 +1644,7 @@ void ProgramRainbowWhite(byte idx) {
 	}
 
 	byte *ptr = &imgData[idx][0];
-	long color, i, wht;
+	int color, i, wht;
 
 	//wht = GetSimpleOscillatePos(fxIntVars[idx][6], 10, 5) ;
 
@@ -1670,19 +1702,20 @@ void ProgramRainbowWhite(byte idx) {
 //Random splash - ToDo: add ripple effect
 //Programmed by MEO from scratch
 void ProgramRandomSplash(byte idx){
-	int bulbArray;
+	short bulbArray;
 	if(fxInitialised[idx] == false) { // Initialize effect?
 		fxIntVars[idx][0] = random(3) * 512; //Colour on color wheel
 		fxIntVars[idx][1] = 0; //add bulb to splash (not yet randomised)
 		fxIntVars[idx][2] = 0; //add frame for the new bulb to splash
 		fxIntVars[idx][3] = 0; //add bulb to splash (random version)
-		fxIntVars[idx][4] = 50; //a new splash every x frames
+		fxIntVars[idx][4] = 20; //a new splash every x frames
 
 		for (bulbArray = 0;bulbArray < 10 ; bulbArray++ ){
 			fxArrVars[idx][0][bulbArray] = -1; //reset cache bulbs
 			fxArrVars[idx][1][bulbArray] = -1; //reset cache frames
 		}
 		fxFrameCount[idx] = 0; //overall frame/time
+
 		fxFrameDelay[idx] = 0; //delay frame count
 		fxFrameDelayCount[idx] = 0; //delay frame
 
@@ -1692,7 +1725,7 @@ void ProgramRandomSplash(byte idx){
 	byte *ptr = &imgData[idx][0];
 
 	//make code easier to read
-	long newBulbNonRand, newFrame, newBulbRand, splashDelay;
+	int newBulbNonRand, newFrame, newBulbRand, splashDelay;
 	newBulbNonRand = fxIntVars[idx][1];
 	newFrame = fxIntVars[idx][2];
 	newBulbRand = fxIntVars[idx][3];
@@ -1701,44 +1734,36 @@ void ProgramRandomSplash(byte idx){
 	newBulbRand = GetRandom(newBulbNonRand, NUM_PIXELS);
 
 	if (fxFrameDelayCount[idx] == fxFrameDelay[idx]) {//only do once every delay frames
-		long color, splash;
-
-		for(int i = 0; i < NUM_PIXELS; i++) {
-			splash = 0;
-			//To Do: total up all 10 buffered interactions before setting ptr. The commented out code doesn't work, and slows things down a lot
-
-			//Test code
-			//Serial.println(""); Serial.print(i);Serial.print(", ");Serial.print(fxFrameCount[idx]);Serial.print(" : ");
-
-			//for (bulbArray = 0; bulbArray < 10 ; bulbArray++ ){ // 0; <10; ++
-				//if (fxArrVars[idx][0][bulbArray] >= 0){ //ignore cache items not yet set
-					//splash = splash + GetSplash(i, fxFrameCount[idx], fxArrVars[idx][0][bulbArray], fxArrVars[idx][1][bulbArray], 0.25, 0.9);
-					splash = GetSplash(i, fxFrameCount[idx], fxArrVars[idx][0][0], fxArrVars[idx][1][0], 0.66, 0.9);
-					//Test code
-					//Serial.print(fxArrVars[idx][0][bulbArray]);Serial.print(", ");Serial.print(fxArrVars[idx][1][bulbArray]);Serial.print(", "), Serial.print(splash), Serial.print("; ");
-				//}
-			//}
-			if (splash > 255){
-				splash = 255;
-			}
-
-			color = hsv2rgb(fxIntVars[idx][0], 255 - splash, splash, 0);
-			*ptr++ = color >> 16; *ptr++ = color >> 8; *ptr++ = color;
-		}
+		int color, splash;
 
 		if ((fxFrameCount[idx] % splashDelay) == 0){ //new splash every fxI32Vars[idx][4] frames
 			newFrame = fxFrameCount[idx];
 			newBulbNonRand++;
 
 			//insert newest flash at start, and move rest along
-			//if (fxFrameCount[idx] > splashDelay * 9) {//first 10 setup already in initialisation
 			for (bulbArray = 8; bulbArray >= 0 ; bulbArray--) {
 				fxArrVars[idx][0][bulbArray + 1] = fxArrVars[idx][0][bulbArray]; //shift bulbs in cache
 				fxArrVars[idx][1][bulbArray + 1] = fxArrVars[idx][1][bulbArray]; //shift frames in cache
 			}
 			fxArrVars[idx][0][0] = newBulbRand; // insert new bulb into cache
 			fxArrVars[idx][1][0] = newFrame; // insert new frame into cache
-			//}
+		}
+
+		for(int i = 0; i < NUM_PIXELS; i++) {
+			splash = 0;
+
+			for (bulbArray = 0; bulbArray < 10 ; bulbArray++ ){ // 0; <10; ++
+				if (fxArrVars[idx][0][bulbArray] >= 0){ //ignore cache items not yet set					
+					splash = splash + GetSplash(i, fxFrameCount[idx], fxArrVars[idx][0][bulbArray], fxArrVars[idx][1][bulbArray], 0.20);
+				}
+			}
+			if (splash > 255){
+				splash = 255;
+			}
+			//to do: make only the level accumulate, so that whites stand out more. (If possible!)
+			//can change color, if use hsv2rgb((fxIntVars[idx][0] + splash * 10) % 1536,...
+			color = hsv2rgb(fxIntVars[idx][0], 255 - splash, splash, 0);
+			*ptr++ = color >> 16; *ptr++ = color >> 8; *ptr++ = color;
 		}
 
 		//increase overall frame counter
@@ -1778,7 +1803,7 @@ void crossfadeSimple(void) {
 
 // Straight left-to-right or right-to-left wipe
 void crossfadeWipe(void) {
-	long x, y, b;
+	int x, y, b;
 	if(fxIntVars[2][0] == 0) {
 		fxIntVars[2][1] = random(1, NUM_PIXELS); // run, in pixels
 		fxIntVars[2][2] = (random(2) == 0) ? 255 : -255; // rise
@@ -1800,7 +1825,7 @@ void crossfadeWipe(void) {
 
 // Dither reveal between images
 void crossfadeDither(void) {
-	long fade;
+	int fade;
 	int  i, bit, reverse, hiWord;
 
 	if(fxIntVars[2][0] == 0) {
@@ -1883,10 +1908,10 @@ inline byte getGamma(byte x) {
 // rendering code elsehwere in this file was written to be aware of these
 // units.  Saturation and value (brightness) range from 0 to 255.
 // MEO: wheelLine 0: Full wheel RGB; 1: RG; 2: GB; 3: BR
-long hsv2rgb(long h, byte s, byte v, int wheelLine) {
+int hsv2rgb(int h, byte s, byte v, int wheelLine) {
 	byte r, g, b, lo;
 	int  s1;
-	long v1;
+	int v1;
 
 	// Hue
 	switch (wheelLine)
@@ -1948,7 +1973,7 @@ long hsv2rgb(long h, byte s, byte v, int wheelLine) {
 	b = 255 - (((255 - b) * s1) >> 8);
 
 	// Value (brightness) and 24-bit color concat merged: similar to above, add
-	// 1 to allow shifts, and upgrade to long makes other conversions implicit.
+	// 1 to allow shifts, and upgrade to int makes other conversions implicit.
 	v1 = v + 1;
 	return (((r * v1) & 0xff00) << 8) |
 		((g * v1) & 0xff00)       |
@@ -2174,8 +2199,8 @@ int GetQuadraticLevel(int pos, int length, bool half) {
 // Thanks to Mohit Bakshi from Quora for providing equation:
 // https://www.quora.com/Mathematics/What-is-the-equation-for-a-moving-zig-zag-type-oscillation
 // using this allows me to work out previous positions so that I can do smooth fades
-long GetSimpleOscillatePos(long t, long a, long b) {
-	long s, n;
+int GetSimpleOscillatePos(int t, int a, int b) {
+	int s, n;
 	n = t / (a + b);
 
 	if ((n * (a + b) <= t) && (t <= ((n + 1) * a) + (n * b))) {
@@ -2199,17 +2224,24 @@ long GetSimpleOscillatePos(long t, long a, long b) {
 timStep++;*/
 
 //info for a splash effect - to do: ripple?
-long GetSplash(long bulbOut, long frameOut, long bulbStart, long frameStart, float velocity, float damping) {
+int GetSplash(int bulbOut, int frameOut, int bulbStart, int frameStart, float velocity) {
 	float amplitudeOut; //the return value before adjustment
-	long frameRelative; //relative time, i.e. time into the effect
+	int frameRelative; //relative time, i.e. time into the effect
 	float distance; // distance effect has travelled on one side
 
-	long frame = frameOut - frameStart;
-	amplitudeOut = pow(damping, (float)frame);
-	distance = velocity * frame;
+	short frame = frameOut - frameStart;
 
-	float level = (MAX_LEVEL * amplitudeOut);
-	long finalOutput = 0;
+	distance = velocity * (float)frame;
+
+	float level = 0.0;
+	if (frame < 100) { //100 is size of damping table
+		//amplitudeOut = pow(damping, (float)frame); //pow(x,y) is really really slow!
+		//level = ((float)MAX_LEVEL * amplitudeOut);
+		level = ((float)MAX_LEVEL * dampingTable[frame]);
+	}
+	
+
+	int finalOutput = 0;
 	if (((float)bulbOut >= ((float)bulbStart - distance)) && ((float)bulbOut <= ((float)bulbStart + distance))) {
 		if (level > 1.0) {
 			finalOutput = (long)(level - 1); //adjust to zero-based
@@ -2221,7 +2253,7 @@ long GetSplash(long bulbOut, long frameOut, long bulbStart, long frameStart, flo
 //Chaser support functions
 
 void FillChaserSeq(uint8_t count, uint16_t sequence, uint8_t span_size, int startColor, 
-						   long (*sequence_func)(uint16_t sequence, int startColor), byte idx)
+						   int (*sequence_func)(uint16_t sequence, int startColor), byte idx)
 {
 	//begin, count, sequence, span, func, idx)
 	while (count--)
@@ -2230,7 +2262,7 @@ void FillChaserSeq(uint8_t count, uint16_t sequence, uint8_t span_size, int star
 	}
 }
 
-void SetChaserColor(uint8_t bulb, long color, byte idx)
+void SetChaserColor(uint8_t bulb, int color, byte idx)
 {
 	byte *ptr = &imgData[idx][0];
 	for (int i=0; i<NUM_PIXELS; i++) 
@@ -2245,7 +2277,7 @@ void SetChaserColor(uint8_t bulb, long color, byte idx)
 } 
 
 //Chaser patterns
-long ChaseRGB(uint16_t sequence, int startColor)
+int ChaseRGB(uint16_t sequence, int startColor)
 {
     sequence = sequence % 3;
     if (sequence == 0)
@@ -2259,7 +2291,7 @@ long ChaseRGB(uint16_t sequence, int startColor)
     return (hsv2rgb(1024, 255, 255, 0));
 } 
 
-long ChaseRotateCompliment(uint16_t sequence, int startColor)
+int ChaseRotateCompliment(uint16_t sequence, int startColor)
 {
 	uint16_t positionP, positionC;
 	positionP = (startColor + sequence) % 1536;
@@ -2273,7 +2305,7 @@ long ChaseRotateCompliment(uint16_t sequence, int startColor)
     }
 }
 
-long ChaseRotateAnalogic45(uint16_t sequence, int startColor)
+int ChaseRotateAnalogic45(uint16_t sequence, int startColor)
 {
 	uint16_t positionP1, positionP2, positionP3;
 	positionP1 = (startColor + sequence) % 1536;
@@ -2291,7 +2323,7 @@ long ChaseRotateAnalogic45(uint16_t sequence, int startColor)
 	return (hsv2rgb(positionP1, 255, 255, 0)); //45 degrees clockwise
 }
 
-long ChaseRotateAccentedAnalogic30(uint16_t sequence, int startColor)
+int ChaseRotateAccentedAnalogic30(uint16_t sequence, int startColor)
 {
 	uint16_t positionP1, positionP2, positionP3, positionC;
 	positionP1 = (startColor + sequence) % 1536;
