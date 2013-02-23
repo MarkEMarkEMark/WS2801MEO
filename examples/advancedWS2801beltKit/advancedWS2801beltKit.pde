@@ -5,6 +5,9 @@ Programmed for the Due - so 100+ bulbs and fast frame rates now possible! */
 	- Frame rate controlled by potentiometer
 	- buttons to change programs / variations / choose random / switch off
 	- replace common vars with named ones (like current frame, main hue etc)
+	- choose fade effect button
+
+	- use table similar to dampingTable for larson/random strobe - so can have variable level of trail fade
 
 /* ToDo: Patterns Ideas
 
@@ -82,8 +85,8 @@ some future expansion if I'm ever foolish enough to attempt that. */
 #define pgm_read_byte(x) (*(x))
 #define NUM_PIXELS 100
 #define FRAMES_PER_SECOND 60
-#define FADE_FRAMES 512   //number of frames to crossfade within
-#define STAY_FRAMES 5120 //number of frames to show a program - if multiple of half num pixels, then some programs won't run into each other (eg random strobe fade)
+#define FADE_FRAMES 256   //number of frames to crossfade within
+#define STAY_FRAMES 300 //number of frames to show a program - if multiple of half num pixels, then some programs won't run into each other (eg random strobe fade)
 #define MAX_LEVEL 256 //max R,G,B or S, V levels (note: need to subtract one to make 0 based)
 #define MAX_LEVEL0 (MAX_LEVEL - 1)
 
@@ -107,6 +110,24 @@ int TT[] = {0x15, 0x38, 0x32, 0x2c, 0x0d, 0x13, 0x07, 0x2a};
 float dampingTable[100];
 
 
+//multiple button handling by ladyada: http://www.adafruit.com/blog/2009/10/20/example-code-for-multi-button-checker-with-debouncing/
+// This code modified by Mark Ortiz for Due
+//Buttons initialisation
+//if you want, you can even run the button checker in the background, which can make for a very easy interface. Remember that you’ll need to clear “just pressed”, etc. after checking or it will be “stuck” on
+#define DEBOUNCE 10  // button debouncer, how many ms to debounce, 5+ ms is usually plenty
+// here is where we define the buttons that we'll use. button "1" is the first, button "6" is the 6th, etc
+byte buttons[] = {22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32}; // the analog A0-15 pins are also known as 54+ on Mega
+// This handy macro lets us determine how big the array up above is, by checking the size
+#define NUMBUTTONS sizeof(buttons)
+// we will track if a button is just pressed, just released, or 'currently pressed'
+volatile byte pressed[NUMBUTTONS], justpressed[NUMBUTTONS], justreleased[NUMBUTTONS];
+
+//buttons
+#define BUTTON_ONOFF 7
+//states
+bool justPressedOnOff, desireOff, turningOff, turningOn, isOff;
+bool desireRandom = true;
+
 //	Arduino Due Timer code by Sebastian Vik & cmaglie
 //		example: startTimer(TC1, 0, TC3_IRQn, 40)
 //		TC1 : timer counter. Can be TC0, TC1 or TC2
@@ -127,16 +148,16 @@ float dampingTable[100];
 //				TC2, 1,			TC7_IRQn  =>  TC7_Handler()		3, 10
 //				TC2, 2,			TC8_IRQn  =>  TC8_Handler()		11, 12
 void startTimer(Tc *tc, uint32_t channel, IRQn_Type irq, uint32_t frequency) {
-  pmc_set_writeprotect(false);
-  pmc_enable_periph_clk((uint32_t)irq);
-  TC_Configure(tc, channel, TC_CMR_WAVE | TC_CMR_WAVSEL_UP_RC | TC_CMR_TCCLKS_TIMER_CLOCK4);
-  uint32_t rc = VARIANT_MCK/128/frequency; //128 because we selected TIMER_CLOCK4 above
-  TC_SetRA(tc, channel, rc/2); //50% high, 50% low
-  TC_SetRC(tc, channel, rc);
-  TC_Start(tc, channel);
-  tc->TC_CHANNEL[channel].TC_IER=TC_IER_CPCS;
-  tc->TC_CHANNEL[channel].TC_IDR=~TC_IER_CPCS;
-  NVIC_EnableIRQ(irq);
+	pmc_set_writeprotect(false);
+	pmc_enable_periph_clk((uint32_t)irq);
+	TC_Configure(tc, channel, TC_CMR_WAVE | TC_CMR_WAVSEL_UP_RC | TC_CMR_TCCLKS_TIMER_CLOCK4);
+	uint32_t rc = VARIANT_MCK/128/frequency; //128 because we selected TIMER_CLOCK4 above
+	TC_SetRA(tc, channel, rc/2); //50% high, 50% low
+	TC_SetRC(tc, channel, rc);
+	TC_Start(tc, channel);
+	tc->TC_CHANNEL[channel].TC_IER=TC_IER_CPCS;
+	tc->TC_CHANNEL[channel].TC_IDR=~TC_IER_CPCS;
+	NVIC_EnableIRQ(irq);
 }
 
 // You can also use hardware SPI for ultra-fast writes by omitting the data
@@ -167,8 +188,11 @@ int fxIntVars[3][11],				// Effect instance variables (explained later)
 	transitionTime;					// Duration (in frames) of current transition
 float fxFltVars[3][1];				// MEO: float variables
 
+bool randProg = true;
+bool lightsOn = true;
+
 // function prototypes, leave these be :)
-void ProgramSolidColor(byte idx);		//pburgess
+/*void ProgramSolidColor(byte idx);		//pburgess
 void ProgramRotatingRainbow(byte idx);	//pburgess
 void ProgramSineWave(byte idx);			//pburgess
 void ProgramWavyFlag(byte idx);			//pburgess
@@ -184,7 +208,7 @@ void ProgramStrobeFade(byte idx);		//MEO
 void ProgramOldFashioned(byte idx);		//MEO
 void ProgramRotatingCircles(byte idx);  //MEO
 void ProgramRainbowWhite(byte idx);		//MEO
-void ProgramRandomSplash(byte idx);		//MEO
+void ProgramRandomSplash(byte idx);		//MEO*/
 
 // Chaser functions
 void SetChaserColor(uint8_t bulb, int color, byte idx);
@@ -197,11 +221,11 @@ void crossfadeWipe(void);
 void crossfadeDither(void);
 
 void renderAlpha03(void);
-void callback();
+void LightFrame();
 byte getGamma(byte x);
-int hsv2rgb(int h, byte s, byte v, int wheelLine);
-char fixSin(int angle);
-char fixCos(int angle);
+int HSVtoRGB(int h, byte s, byte v, int wheelLine);
+char FixedSine(int angle);
+char FixedCosine(int angle);
 
 // List of image effect and alpha channel rendering functions; the code for
 // each of these appears later in this file.  Just a few to start with...
@@ -209,37 +233,38 @@ char fixCos(int angle);
 void (*renderEffect[])(byte) = {
 			ProgramOff,
 			//ProgramSolidColor,
-			ProgramRotatingRainbow,
-			ProgramSineWave, //affected by fixSin/fixCos issue - temp fixed by using proper Sin
-			//ProgramWavyFlag, //affected by fixSin/fixCos issue -temp fixed by using proper Cos
+			//ProgramRotatingRainbow,
+			ProgramSineWave, //affected by FixedSine/FixedCosine issue - temp fixed by using proper Sin
+			//ProgramWavyFlag, //affected by FixedSine/FixedCosine issue -temp fixed by using proper Cos
 			//ProgramPulse,
 			ProgramPhasing,
-			ProgramSimplexNoise,
+			//ProgramSimplexNoise,
 			//ProgramRandomStrobe,
 			//ProgramFlames,
-			ProgramChaser,
-			ProgramLarsonScanner,
-			ProgramOldFashioned,
-			ProgramRotatingCircles,
-			ProgramRainbowWhite,
-			ProgramStrobeFade,
-			ProgramRandomSplash},
+			//ProgramChaser,
+			//ProgramLarsonScanner,
+			//ProgramOldFashioned,
+			ProgramRotatingCircles},
+			//ProgramRainbowWhite,
+			//ProgramStrobeFade,
+			//ProgramRandomSplash},
 	  (*renderAlpha[])(void) = {
-			crossfadeDither,
-			crossfadeWipe,
+			//crossfadeDither,
+			//crossfadeWipe,
 			crossfadeSimple};
 	
 // ---------------------------------------------------------------------------
 
 void setup() {
 	//Timer function re-written for Ardunino Due
-	startTimer(TC1, 0, TC3_IRQn, 60);
+	startTimer(TC1, 0, TC3_IRQn, 60); //lights - 60fps
+	startTimer(TC0, 0, TC0_IRQn, 67); //Buttons (67Hz = approx 15ms)
 
 	// Open serial communications and wait for port to open:
 	Serial.begin(115200);
 
 	// Start up the LED pixelString.  Note that pixelString.show() is NOT called here --
-	// the callback function will be invoked immediately when attached, and
+	// the LightFrame function will be invoked immediately when attached, and
 	// the first thing the calback does is update the pixelString.
 	pixelString.begin();
 
@@ -252,60 +277,105 @@ void setup() {
 
 	fxIntVars[backImgIdx][0] = 1;           // Mark back image as initialized
 
-	for (int table = 0; table < 100; table++)
-	{
-		dampingTable[table] = pow(damping, table);
-		//Serial.println(dampingTable[table], 5);
+	// Pushbuttons: Make input & enable pull-up resistors on switch pins
+	for (byte button =0; button< NUMBUTTONS; button++) {
+		pinMode(buttons[button], INPUT);
+		digitalWrite(buttons[button], HIGH);
 	}
-
-	/*int t, b;
-	for (t = 0;t < 200 ;t++ ) {
-		for (b = 0;b < 20 ;b++ ) {
-			Serial.print(GetSplash(t, b, 15, 9, 1.0, 0.5)); Serial.print("   ");
-		}
-		Serial.println(" ");
-	}*/
-
-	//float q, p;
-	//q = quickPow(0.5, 2);
-	//p = pow(0.5, 2);
-
-	//Serial.print(p); Serial.print("  :  "); Serial.println(q);
-
 }
 
 void loop() {
-	// Do nothing.  All the work happens in the TC3_Handler() function below,
-	// but we still need loop() here to keep the compiler happy.
+	//require by Ardunino compiler
 }
 
-// Timer interrupt handler.
+// Timer interrupt handler - lights
 void TC3_Handler() {
-  // You must do TC_GetStatus to "accept" interrupt
-  // As parameters use the first two parameters used in startTimer (TC1, 0 in this case)
-  TC_GetStatus(TC1, 0);
+	// You must do TC_GetStatus to "accept" interrupt
+	// As parameters use the first two parameters used in startTimer (TC1, 0 in this case)
+	TC_GetStatus(TC1, 0);
 
-  Callback();
+	LightFrame();
+}
+
+//Timer interrupt handler - buttons
+void TC0_Handler() {
+	// You must do TC_GetStatus to "accept" interrupt
+	// As parameters use the first two parameters used in startTimer (TC1, 0 in this case)
+	TC_GetStatus(TC0, 0);
+
+	CheckSwitches();
 }
 
 //###############################
 
-void Callback() {
+//pushbuttons
+void CheckSwitches() {
+	static byte previousstate[NUMBUTTONS];
+	static byte currentstate[NUMBUTTONS];
+	static long lasttime;
+	byte index;
+	 
+	if (millis() < lasttime) {
+		// we wrapped around, lets just try again
+		lasttime = millis();
+	}
+	 
+	if ((lasttime + DEBOUNCE) > millis()) {
+		// not enough time has passed to debounce
+		return;
+	}
+	 
+	// ok we have waited DEBOUNCE milliseconds, lets reset the timer
+	lasttime = millis();
+	 
+	for (index = 0; index < NUMBUTTONS; index++) {
+		currentstate[index] = digitalRead(buttons[index]);   // read the button
+		if (currentstate[index] == previousstate[index]) {
+			if ((pressed[index] == LOW) && (currentstate[index] == LOW)) {
+				// just pressed
+				justpressed[index] = 1;
+			}
+			else if ((pressed[index] == HIGH) && (currentstate[index] == HIGH)){
+				// just released
+				justreleased[index] = 1;
+			}
+			pressed[index] = !currentstate[index];  // remember, digital HIGH means NOT pressed
+		}
+		previousstate[index] = currentstate[index];   // keep a running tally of the buttons
+	}
+}
+
+void LightFrame() {
 	// Very first thing here is to issue the pixelString data generated from the
-	// *previous* callback.  It's done this way on purpose because show() is
+	// *previous* LightFrame.  It's done this way on purpose because show() is
 	// roughly constant-time, so the refresh will always occur on a uniform
 	// beat with respect to the Timer1 interrupt.  The various effects
 	// rendering and compositing code is not constant-time, and that
 	// unevenness would be apparent if show() were called at the end.
 	pixelString.show();
 
+	// tCounter counts from *minus* STAY_FRAMEs to 0, where transition starts,
+	// then up to *plus* FADE_FRAMES
+
 	byte frontImgIdx = 1 - backImgIdx,
-		*backPtr    = &imgData[backImgIdx][0],
+		*backPtr = &imgData[backImgIdx][0],
 		r, g, b;
 	int  i;
 
+	//handle on/off button being pressed - set desired action
+	if (justpressed[BUTTON_ONOFF]) {
+		justpressed[BUTTON_ONOFF] = 0;
+		desireOff = !desireOff;
+		if (desireOff) {
+			Serial.print("Desire off: ["); Serial.print(fxIdx[frontImgIdx]); Serial.print(" / "); Serial.print(fxIdx[backImgIdx]); Serial.print("] "); Serial.println(tCounter); 
+		} else {
+			Serial.print("Desire on: ["); Serial.print(fxIdx[frontImgIdx]); Serial.print(" / "); Serial.print(fxIdx[backImgIdx]); Serial.print("] "); Serial.println(tCounter); 
+		}
+	}
+
 	// Always render back image based on current effect index:
 	(*renderEffect[fxIdx[backImgIdx]])(backImgIdx);
+
 
 	// Front render and composite only happen during transitions...
 	if(tCounter > 0) {
@@ -342,20 +412,72 @@ void Callback() {
 		}
 	}
 
-	// Count up to next transition (or end of current one):
+	// Count up to next transition (or end of current one): 
 	tCounter++;
+
+	//immediately set counter to fire off next transition, if...
+	// not already turning off, and want off and is on
+	// not already turning on, and want on, and is off
+	if ((desireOff && !turningOff && !isOff) || (!desireOff && !turningOn && isOff)) {
+		if (tCounter > 0) {
+			Serial.print("Already in transition... wait..." ); Serial.print(fxIdx[frontImgIdx]); Serial.print(" / "); Serial.print(fxIdx[backImgIdx]); Serial.print("] "); Serial.println(tCounter); 
+		} else {
+			tCounter = 0;
+			if (desireOff) {
+				turningOff = true;
+				turningOn = false;
+				Serial.print("Turning off: ["); Serial.print(fxIdx[frontImgIdx]); Serial.print(" / "); Serial.print(fxIdx[backImgIdx]); Serial.print("] "); Serial.println(tCounter); 
+			} else {
+				turningOn = true;
+				turningOff = false;
+				fxIdx[backImgIdx] = 0; //ensure coming on from ProgramOff
+				Serial.print("Turning on: ["); Serial.print(fxIdx[frontImgIdx]); Serial.print(" / "); Serial.print(fxIdx[backImgIdx]); Serial.print("] "); Serial.println(tCounter); 
+			}
+		}
+	}
+
+
 	if(tCounter == 0) { // Transition start
-		// Randomly pick next image effect and alpha effect indices:
-		fxIdx[frontImgIdx] = 1 + random((sizeof(renderEffect) / sizeof(renderEffect[0])) - 1); //-1, +1 so that doesn't run ProgramOff()
-		fxIdx[2]           = random((sizeof(renderAlpha)  / sizeof(renderAlpha[0])));
-		transitionTime     = FADE_FRAMES; //random(30, 181); // 0.5 to 3 second transitions
+		if (turningOff) {
+			fxIdx[frontImgIdx] = 0;
+		} else {
+			// Randomly pick next image effect and alpha effect indices:
+			fxIdx[frontImgIdx] = 1 + random((sizeof(renderEffect) / sizeof(renderEffect[0])) - 1); //-1, +1 so that doesn't run ProgramOff()
+		}
+
+		fxIdx[2] = random((sizeof(renderAlpha) / sizeof(renderAlpha[0])));
+		transitionTime = FADE_FRAMES;
 		fxInitialised[frontImgIdx] = false; // Effect not yet initialized
-		fxInitialised[2]           = false; // Transition not yet initialized
+		fxInitialised[2] = false; // Transition not yet initialized
 	} else if(tCounter >= transitionTime) { // End transition
 		fxIdx[backImgIdx] = fxIdx[frontImgIdx]; // Move front effect index to back
-		backImgIdx        = 1 - backImgIdx;     // Invert back index
-		tCounter          = -STAY_FRAMES; //-120 - random(240); // Hold image 2 to 6 seconds
+		backImgIdx = 1 - backImgIdx;     // Invert back index
+
+		//transition finished, so mark as switched on or off, if was turning on or off
+		if (turningOff) {
+			isOff = true;
+			Serial.print("Is off: ["); Serial.print(fxIdx[frontImgIdx]); Serial.print(" / "); Serial.print(fxIdx[backImgIdx]); Serial.print("] "); Serial.println(tCounter); 
+		}
+		if (turningOn) {
+			isOff = false;
+			Serial.print("Is on: ["); Serial.print(fxIdx[frontImgIdx]); Serial.print(" / "); Serial.print(fxIdx[backImgIdx]); Serial.print("] "); Serial.println(tCounter); 
+		}
+		//transition finished, so no longer turning on or off
+		turningOff = false;
+		turningOn = false;
+		//if not randomised, then set transition time to very long
+		if (desireRandom) {
+			tCounter = -STAY_FRAMES; //-120 - random(240); // Hold image 2 to 6 seconds
+		} else {
+			tCounter = -99999999; //days worth
+		}
+		//regardless of randomised or not, if is off, set transition time to very long
+		if (isOff) {
+			tCounter = -99999999; //days worth
+		}
+		Serial.print("Timer reset: ["); Serial.print(fxIdx[frontImgIdx]); Serial.print(" / "); Serial.print(fxIdx[backImgIdx]); Serial.print("] "); Serial.println(tCounter); 
 	}
+
 }
 
 // ---------------------------------------------------------------------------
@@ -427,7 +549,7 @@ void ProgramRotatingRainbow(byte idx) {
 	byte *ptr = &imgData[idx][0];
 	int color, i;
 	for(i=0; i<NUM_PIXELS; i++) {
-		color = hsv2rgb(fxIntVars[idx][2] + fxIntVars[idx][0] * i / NUM_PIXELS,
+		color = HSVtoRGB(fxIntVars[idx][2] + fxIntVars[idx][0] * i / NUM_PIXELS,
 			255, 255, fxIntVars[idx][4]);
 		*ptr++ = color >> 16; *ptr++ = color >> 8; *ptr++ = color;
 	}
@@ -486,11 +608,11 @@ void ProgramSineWave(byte idx) {
 		// Peaks of sine wave are white, troughs are black, mid-range
 		// values are pure hue (100% saturated).
 		//>> Sine table way - need to fix
-		////foo = fixSin(fxIntVars[idx][4] + fxIntVars[idx][2] * i / NUM_PIXELS); //original 
+		////foo = FixedSine(fxIntVars[idx][4] + fxIntVars[idx][2] * i / NUM_PIXELS); //original 
 		/*foo = (int)(sin(fxIntVars[idx][4] + fxIntVars[idx][2] * i / NUM_PIXELS) * 255); //fix attempt - almost works
 		color = (foo >= 0) ?
-			hsv2rgb(fxIntVars[idx][1], 254 - (foo * 2), 255, 0) :
-				hsv2rgb(fxIntVars[idx][1], 255, 254 + foo * 2, 0);
+			HSVtoRGB(fxIntVars[idx][1], 254 - (foo * 2), 255, 0) :
+				HSVtoRGB(fxIntVars[idx][1], 255, 254 + foo * 2, 0);
 		*ptr++ = color >> 16; *ptr++ = color >> 8; *ptr++ = color;
 		//<<<<*/
 
@@ -500,9 +622,9 @@ void ProgramSineWave(byte idx) {
 
 		color = (y >= 0.0) ?
 			// Peaks of sine wave are white (saturation = 0)
-			color = hsv2rgb(fxIntVars[idx][0]+(fxIntVars[idx][7]*fxIntVars[idx][5]), 255 - (int)y, 255, fxIntVars[idx][6]) :
+			color = HSVtoRGB(fxIntVars[idx][0]+(fxIntVars[idx][7]*fxIntVars[idx][5]), 255 - (int)y, 255, fxIntVars[idx][6]) :
 				// troughs are black (level = 0)
-				color = hsv2rgb(fxIntVars[idx][0]+(fxIntVars[idx][7]*fxIntVars[idx][5]), 255, 255 + (int)y, fxIntVars[idx][6]);
+				color = HSVtoRGB(fxIntVars[idx][0]+(fxIntVars[idx][7]*fxIntVars[idx][5]), 255, 255 + (int)y, fxIntVars[idx][6]);
 		*ptr++ = color >> 16; *ptr++ = color >> 8; *ptr++ = color;
 	}
 	fxIntVars[idx][3] += fxIntVars[idx][2];
@@ -514,21 +636,50 @@ void ProgramSineWave(byte idx) {
 // to the full LED pixelString length in the flag effect code, below.
 // Can change this data to the colors of your own national flag,
 // favorite sports team colors, etc.  OK to change number of elements.
-//MEO: ToDo: this doens't work properly because of the fixSin/fixCos problem
-#define C_RED   160,   0,   0
-#define C_WHITE 255, 255, 255
-#define C_BLUE    0,   0, 100
+//MEO: ToDo: this doens't work properly because of the FixedSine/FixedCosine problem
+#define USA_RED   160,   0,   0
+#define USA_WHITE 255, 255, 255
+#define USA_BLUE    0,   0, 100
+
+#define WHITE_CANDLE 255, 147, 41 //-CANDLE - 1900
+#define WHITE_40W 255, 157, 50 //-
+#define BLACK 0, 0, 0
+
+#define FLAME_YELLOW   255,   127,   0
+#define FLAME_ORANGE 255, 47, 00
+#define FLAME_RED    255,   0, 0
+
+#define STD_RED 255,0,0
+#define STD_GREEN 0,255,0
+#define STD_BLUE 0,0,255
+
+//cheesy RGB version
+/*byte flagTable[] = {
+	STD_RED, BLACK, STD_GREEN, BLACK, STD_BLUE, BLACK,
+	STD_RED, BLACK, STD_GREEN, BLACK, STD_BLUE, BLACK,
+	STD_RED, BLACK, STD_GREEN, BLACK, STD_BLUE, BLACK};*/
 
 //flame effect version - RED/ORANGE - ORANGE/YELLOW
-//#define C_RED   255,   127,   0
-//#define C_WHITE 255, 64, 00
-//#define C_BLUE    255,   0, 0
-
-
 byte flagTable[]  = {
-	C_BLUE , C_WHITE, C_BLUE , C_WHITE, C_BLUE , C_WHITE, C_BLUE,
-	C_RED  , C_WHITE, C_RED  , C_WHITE, C_RED  , C_WHITE, C_RED ,
-	C_WHITE, C_RED  , C_WHITE, C_RED  , C_WHITE, C_RED };
+	FLAME_YELLOW, FLAME_ORANGE, FLAME_YELLOW , FLAME_ORANGE, FLAME_YELLOW, FLAME_ORANGE, FLAME_YELLOW,
+	FLAME_ORANGE, FLAME_RED, FLAME_ORANGE, FLAME_RED, FLAME_ORANGE, FLAME_RED ,
+	BLACK, FLAME_RED, BLACK, FLAME_RED, BLACK, FLAME_RED, BLACK };
+
+//original USA flag version
+/*byte flagTable[]  = {
+	USA_BLUE , USA_WHITE, USA_BLUE, USA_WHITE, USA_BLUE, USA_WHITE, USA_BLUE,
+	USA_RED  , USA_WHITE, USA_RED, USA_WHITE, USA_RED, USA_WHITE, USA_RED ,
+	USA_WHITE, USA_RED, USA_WHITE, USA_RED, USA_WHITE, USA_RED };*/
+
+//flickey candle version
+/*byte flagTable[] = { WHITE_CANDLE, BLACK, WHITE_40W, BLACK,
+	WHITE_CANDLE, BLACK, WHITE_40W, BLACK,
+	WHITE_CANDLE, BLACK, WHITE_40W, BLACK,
+	WHITE_CANDLE, BLACK, WHITE_40W, BLACK,
+	WHITE_CANDLE, BLACK, WHITE_40W, BLACK,
+	WHITE_CANDLE, BLACK, WHITE_40W, BLACK,
+	WHITE_CANDLE, BLACK, WHITE_40W, BLACK,
+	WHITE_CANDLE, BLACK, WHITE_40W, BLACK };*/
 
 // Wavy flag effect
 void ProgramWavyFlag(byte idx) {
@@ -605,7 +756,7 @@ void ProgramPulse(byte idx) {
 
 	if (fxFrameDelayCount[idx] == fxFrameDelay[idx]) { //only do once every delay frames
 		for(i=0; i<NUM_PIXELS; i++) {
-			color = hsv2rgb(fxIntVars[idx][2], 255, fxIntVars[idx][3], 0);
+			color = HSVtoRGB(fxIntVars[idx][2], 255, fxIntVars[idx][3], 0);
 			*ptr++ = color >> 16; *ptr++ = color >> 8; *ptr++ = color;
 		}
 
@@ -1108,7 +1259,7 @@ void ProgramRandomStrobe(byte idx) {
 		if (GetRandom(i, NUM_PIXELS) == fxIntVars[idx][2]) {
 			if (rainbowFlash_) {
 				int color;
-				color = hsv2rgb(fxIntVars[idx][0] + fxIntVars[idx][3] 
+				color = HSVtoRGB(fxIntVars[idx][0] + fxIntVars[idx][3] 
 					* i / NUM_PIXELS, 255, 255, 0);
 				*ptr++ = color >> 16; *ptr++ = color >> 8; *ptr++ = color;
 			} else {
@@ -1117,7 +1268,7 @@ void ProgramRandomStrobe(byte idx) {
 		} else {
 			if (rainbowMain_)
 			{
-				color = hsv2rgb((fxIntVars[idx][0] + fxIntVars[idx][3] 
+				color = HSVtoRGB((fxIntVars[idx][0] + fxIntVars[idx][3] 
 					* i / NUM_PIXELS) + 768, 255, 100, 0); //768 so main is 180 deg from flash
 				*ptr++ = color >> 16; *ptr++ = color >> 8; *ptr++ = color;
 			} else {
@@ -1408,25 +1559,25 @@ void ProgramLarsonScanner(byte idx){
 		int color, offset;
 		for(int i = 0; i < NUM_PIXELS; i++) {
 			//do backwards trail offset, so brighter overrides dimmer when overlap
-			color = hsv2rgb(0,0,0,0); //background
+			color = HSVtoRGB(0,0,0,0); //background
 			for (offset = 27; offset >= 0; offset--) { // works with GetSmoothFade9, but overkill
 				
 				if (fxIntVars[idx][6] == 1) { //one per string
 					if (i == GetSimpleOscillatePos(fxIntVars[idx][0] - offset, 99, 99)) {
 						if (fxIntVars[idx][5] == 1) { //rainbow
-							color = hsv2rgb((fxIntVars[idx][3] + fxIntVars[idx][1] 
+							color = HSVtoRGB((fxIntVars[idx][3] + fxIntVars[idx][1] 
 								* i / NUM_PIXELS) - offset, 255, GetSmoothFade27(offset), fxIntVars[idx][4]);
 						} else { //fixed color
-							color = hsv2rgb(fxIntVars[idx][1], 255, GetSmoothFade27(offset), 0);
+							color = HSVtoRGB(fxIntVars[idx][1], 255, GetSmoothFade27(offset), 0);
 						}
 					} 
 				} else { //5 per string - ToDo: would be good to generalise this 1/2/4/5/10 per string
 					if (i%20 == GetSimpleOscillatePos(fxIntVars[idx][0] - offset, 19, 19)) {
 						if (fxIntVars[idx][5] == 1) { //rainbow
-							color = hsv2rgb((fxIntVars[idx][3] + fxIntVars[idx][1] 
+							color = HSVtoRGB((fxIntVars[idx][3] + fxIntVars[idx][1] 
 								* i / NUM_PIXELS) - offset, 255, GetSmoothFade9(offset), fxIntVars[idx][4]);
 						} else { //fixed color
-							color = hsv2rgb(fxIntVars[idx][1], 255, GetSmoothFade9(offset), 0);
+							color = HSVtoRGB(fxIntVars[idx][1], 255, GetSmoothFade9(offset), 0);
 						}
 					} 
 				}
@@ -1480,12 +1631,12 @@ void ProgramStrobeFade(byte idx){
 		for(int i = 0; i < NUM_PIXELS; i++) {
 			offset = (NUM_PIXELS + fxIntVars[idx][0] - GetRandom(i, NUM_PIXELS)) % NUM_PIXELS;
 			if (fxIntVars[idx][5] == 0) {
-				color = hsv2rgb(fxIntVars[idx][1], 255, GetSmoothFade27(offset), 0);
+				color = HSVtoRGB(fxIntVars[idx][1], 255, GetSmoothFade27(offset), 0);
 			} else if (fxIntVars[idx][5] == 1) {//rainbow - the complex color term is due to needing to fade in the same colour - otherwise the fade carry  on rotating through colours
-				color = hsv2rgb(((fxIntVars[idx][3] + fxIntVars[idx][1] 
+				color = HSVtoRGB(((fxIntVars[idx][3] + fxIntVars[idx][1] 
 					* i / NUM_PIXELS) - (offset * fxIntVars[idx][2])) % 1536, 255, GetSmoothFade27(offset), fxIntVars[idx][4]);
 			} else { //fade changes colour
-				color = hsv2rgb(((fxIntVars[idx][3] + fxIntVars[idx][1] 
+				color = HSVtoRGB(((fxIntVars[idx][3] + fxIntVars[idx][1] 
 					* i / NUM_PIXELS) + (offset * fxIntVars[idx][2]) * 10) % 1536, 255, GetSmoothFade27(offset), fxIntVars[idx][4]);
 			}
 			*ptr++ = color >> 16; *ptr++ = color >> 8; *ptr++ = color;
@@ -1538,11 +1689,11 @@ void ProgramOldFashioned(byte idx) {
 			inLo = (NUM_PIXELS + (fxIntVars[idx][6] * fxIntVars[idx][0])) % NUM_PIXELS;
 			inHi = (NUM_PIXELS + (fxIntVars[idx][6] * fxIntVars[idx][0]) + fxIntVars[idx][0] - 1) % NUM_PIXELS;
 
-			color = hsv2rgb(fxIntVars[idx][3], 255, 0, 0); //default off
+			color = HSVtoRGB(fxIntVars[idx][3], 255, 0, 0); //default off
 			if ((rBulb >= inLo) && (rBulb <= inHi)) {
-				color = hsv2rgb(fxIntVars[idx][3], 255, getGamma(fxIntVars[idx][4]), 0); //fade in new set
+				color = HSVtoRGB(fxIntVars[idx][3], 255, getGamma(fxIntVars[idx][4]), 0); //fade in new set
 			} else if ((rBulb >= outLo) && (rBulb <= outHi)) {
-				color = hsv2rgb(fxIntVars[idx][2], 255, 255 - getGamma(fxIntVars[idx][4]), 0);//fade out last set
+				color = HSVtoRGB(fxIntVars[idx][2], 255, 255 - getGamma(fxIntVars[idx][4]), 0);//fade out last set
 			}
 
 			*ptr++ = color >> 16; *ptr++ = color >> 8; *ptr++ = color;
@@ -1604,9 +1755,9 @@ void ProgramRotatingCircles(byte idx) {
 	if (fxFrameDelayCount[idx] == fxFrameDelay[idx]) { //only do once every delay frames
 		for(int i=0; i<NUM_PIXELS; i++) {
 			if (i % 2 == 1) {
-				color = hsv2rgb(fxIntVars[idx][0], 255, GetSmoothFade9((i+fxIntVars[idx][2]) % 9), 0);
+				color = HSVtoRGB(fxIntVars[idx][0], 255, GetSmoothFade9((i+fxIntVars[idx][2]) % 9), 0);
 			} else {
-				color = hsv2rgb(fxIntVars[idx][1], 255, GetSmoothFade9((18-i+fxIntVars[idx][2]) % 9), 0);
+				color = HSVtoRGB(fxIntVars[idx][1], 255, GetSmoothFade9((18-i+fxIntVars[idx][2]) % 9), 0);
 			}
 
 			*ptr++ = color >> 16; *ptr++ = color >> 8; *ptr++ = color;
@@ -1649,28 +1800,28 @@ void ProgramRainbowWhite(byte idx) {
 	//wht = GetSimpleOscillatePos(fxIntVars[idx][6], 10, 5) ;
 
 	for(i=0; i<NUM_PIXELS; i++) {
-		color = hsv2rgb(fxIntVars[idx][3] + fxIntVars[idx][1] * i / NUM_PIXELS,
+		color = HSVtoRGB(fxIntVars[idx][3] + fxIntVars[idx][1] * i / NUM_PIXELS,
 			255, 31, fxIntVars[idx][5]);
 
 
 	//note: in reverse fade order, so that brightest 'wins' when can be either
 		if (i == GetSimpleOscillatePos(fxIntVars[idx][0] - 3, 25, 20)) {
-			color = hsv2rgb(fxIntVars[idx][3] + fxIntVars[idx][1] * i / NUM_PIXELS,
+			color = HSVtoRGB(fxIntVars[idx][3] + fxIntVars[idx][1] * i / NUM_PIXELS,
 			127, 31, fxIntVars[idx][5]);
 		}
 
 		if (i == GetSimpleOscillatePos(fxIntVars[idx][0] - 2, 25, 20)) {
-			color = hsv2rgb(fxIntVars[idx][3] + fxIntVars[idx][1] * i / NUM_PIXELS,
+			color = HSVtoRGB(fxIntVars[idx][3] + fxIntVars[idx][1] * i / NUM_PIXELS,
 			63, 63, fxIntVars[idx][5]);
 		}
 
 		if (i == GetSimpleOscillatePos(fxIntVars[idx][0] - 1, 25, 20)) {
-			color = hsv2rgb(fxIntVars[idx][3] + fxIntVars[idx][1] * i / NUM_PIXELS,
+			color = HSVtoRGB(fxIntVars[idx][3] + fxIntVars[idx][1] * i / NUM_PIXELS,
 			31, 127, fxIntVars[idx][5]);
 		}
 
 		if (i == GetSimpleOscillatePos(fxIntVars[idx][0], 25, 20)) {
-			color = hsv2rgb(fxIntVars[idx][3] + fxIntVars[idx][1] * i / NUM_PIXELS,
+			color = HSVtoRGB(fxIntVars[idx][3] + fxIntVars[idx][1] * i / NUM_PIXELS,
 			15, 255, fxIntVars[idx][5]);
 		}
 
@@ -1761,8 +1912,8 @@ void ProgramRandomSplash(byte idx){
 				splash = 255;
 			}
 			//to do: make only the level accumulate, so that whites stand out more. (If possible!)
-			//can change color, if use hsv2rgb((fxIntVars[idx][0] + splash * 10) % 1536,...
-			color = hsv2rgb(fxIntVars[idx][0], 255 - splash, splash, 0);
+			//can change color, if use HSVtoRGB((fxIntVars[idx][0] + splash * 10) % 1536,...
+			color = HSVtoRGB(fxIntVars[idx][0], 255 - splash, splash, 0);
 			*ptr++ = color >> 16; *ptr++ = color >> 8; *ptr++ = color;
 		}
 
@@ -1908,7 +2059,7 @@ inline byte getGamma(byte x) {
 // rendering code elsehwere in this file was written to be aware of these
 // units.  Saturation and value (brightness) range from 0 to 255.
 // MEO: wheelLine 0: Full wheel RGB; 1: RG; 2: GB; 3: BR
-int hsv2rgb(int h, byte s, byte v, int wheelLine) {
+int HSVtoRGB(int h, byte s, byte v, int wheelLine) {
 	byte r, g, b, lo;
 	int  s1;
 	int v1;
@@ -2002,7 +2153,7 @@ byte sineTable[181]  = {
 	127,127,127,127,127
 };
 
-char fixSin(int angle) {
+char FixedSine(int angle) {
 	angle %= 720;               // -719 to +719
 	if(angle < 0) angle += 720; //    0 to +719
 	return (angle <= 360) ?
@@ -2014,7 +2165,7 @@ angle          : // Quadrant 1
 	(720 - angle)]) ; // Quadrant 4
 }
 
-char fixCos(int angle) {
+char FixedCosine(int angle) {
 	angle %= 720;               // -719 to +719
 	if(angle < 0) angle += 720; //    0 to +719
 	return (angle <= 360) ?
@@ -2282,13 +2433,13 @@ int ChaseRGB(uint16_t sequence, int startColor)
     sequence = sequence % 3;
     if (sequence == 0)
     {
-        return (hsv2rgb(0, 255, 255, 0));
+        return (HSVtoRGB(0, 255, 255, 0));
     }
     if (sequence == 1)
     {
-        return (hsv2rgb(512, 255, 255, 0));
+        return (HSVtoRGB(512, 255, 255, 0));
     }
-    return (hsv2rgb(1024, 255, 255, 0));
+    return (HSVtoRGB(1024, 255, 255, 0));
 } 
 
 int ChaseRotateCompliment(uint16_t sequence, int startColor)
@@ -2299,9 +2450,9 @@ int ChaseRotateCompliment(uint16_t sequence, int startColor)
     sequence = sequence % 5;
     if (sequence == 0)
     {
-        return (hsv2rgb(positionC, 255, 255, 0)); // Complimetary color
+        return (HSVtoRGB(positionC, 255, 255, 0)); // Complimetary color
     } else {
-        return (hsv2rgb(positionP, 255, 255, 0)); // Primary colour
+        return (HSVtoRGB(positionP, 255, 255, 0)); // Primary colour
     }
 }
 
@@ -2314,13 +2465,13 @@ int ChaseRotateAnalogic45(uint16_t sequence, int startColor)
     sequence = sequence % 4;
     if (sequence == 0)
     {
-        return (hsv2rgb(positionP2, 255, 255, 0)); // 45 degrees anti-clockwise
+        return (HSVtoRGB(positionP2, 255, 255, 0)); // 45 degrees anti-clockwise
     }
 	if ((sequence == 1) || (sequence == 3))
 	{
-        return (hsv2rgb(positionP3, 255, 255, 0)); // Primary colour
+        return (HSVtoRGB(positionP3, 255, 255, 0)); // Primary colour
     }
-	return (hsv2rgb(positionP1, 255, 255, 0)); //45 degrees clockwise
+	return (HSVtoRGB(positionP1, 255, 255, 0)); //45 degrees clockwise
 }
 
 int ChaseRotateAccentedAnalogic30(uint16_t sequence, int startColor)
@@ -2333,15 +2484,15 @@ int ChaseRotateAccentedAnalogic30(uint16_t sequence, int startColor)
     sequence = sequence % 6;
     if (sequence == 0)
     {
-        return (hsv2rgb(positionP2, 255, 255, 0)); // 30 degrees anti-clockwise
+        return (HSVtoRGB(positionP2, 255, 255, 0)); // 30 degrees anti-clockwise
     }
 	if ((sequence == 1) || (sequence == 5))
 	{
-        return (hsv2rgb(positionP1, 255, 255, 0)); // Primary colour
+        return (HSVtoRGB(positionP1, 255, 255, 0)); // Primary colour
     }
 	if ((sequence == 2) || (sequence == 4))
 	{
-        return (hsv2rgb(positionP3, 255, 255, 0)); // Primary colour
+        return (HSVtoRGB(positionP3, 255, 255, 0)); // Primary colour
     }
-	return (hsv2rgb(positionC, 255, 255, 0)); //30 degrees clockwise
+	return (HSVtoRGB(positionC, 255, 255, 0)); //30 degrees clockwise
 }
