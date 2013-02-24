@@ -7,6 +7,8 @@ This code is Adafruit's LPD8806 Examples (https://github.com/adafruit/LPD8806)
 
 but with Adafruit's WS2801 Driver (https://github.com/adafruit/Adafruit-WS2801-Library)
 
+Requires SomeRandomGuy's ARMtimer library (http://arduino.cc/forum/index.php/topic,130423.msg1124762.html#msg1124762)
+
 Setup for an Ardunino Due
 
 This has been tested SPI only, so note that the SPI pins are the block of 6 marked SPI. If you letter them from the top left A to F, then C is the clock and D is the Data.
