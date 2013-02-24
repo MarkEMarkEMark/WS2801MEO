@@ -81,6 +81,7 @@ some future expansion if I'm ever foolish enough to attempt that. */
 
 #include "SPI.h"
 #include "DriverWS2801.h"
+#include "ARMtimer.h"
 
 #define pgm_read_byte(x) (*(x))
 #define NUM_PIXELS 100
@@ -109,7 +110,6 @@ int TT[] = {0x15, 0x38, 0x32, 0x2c, 0x0d, 0x13, 0x07, 0x2a};
 #define damping 0.90
 float dampingTable[100];
 
-
 //multiple button handling by ladyada: http://www.adafruit.com/blog/2009/10/20/example-code-for-multi-button-checker-with-debouncing/
 // This code modified by Mark Ortiz for Due
 //Buttons initialisation
@@ -127,38 +127,6 @@ volatile byte pressed[NUMBUTTONS], justpressed[NUMBUTTONS], justreleased[NUMBUTT
 //states
 bool justPressedOnOff, desireOff, turningOff, turningOn, isOff;
 bool desireRandom = true;
-
-//	Arduino Due Timer code by Sebastian Vik & cmaglie
-//		example: startTimer(TC1, 0, TC3_IRQn, 40)
-//		TC1 : timer counter. Can be TC0, TC1 or TC2
-//		0   : channel. Can be 0, 1 or 2
-//		TC3_IRQn: irq number. See table.
-//		40  : frequency (in Hz)
-//			The interrupt service routine is TC3_Handler. See table.
-//			Paramters table:
-//				TC	 Channel	ISR/IRQ		  Handler Func		Due Pins
-//				==	 =======	=======		  ======= ====		===	====
-//				TC0, 0,			TC0_IRQn  =>  TC0_Handler()		2, 13
-//				TC0, 1,			TC1_IRQn  =>  TC1_Handler()		60, 61
-//				TC0, 2,			TC2_IRQn  =>  TC2_Handler()		58
-//				TC1, 0,			TC3_IRQn  =>  TC3_Handler()		none (used here for lights)
-//				TC1, 1,			TC4_IRQn  =>  TC4_Handler()		none (
-//				TC1, 2,			TC5_IRQn  =>  TC5_Handler()		none
-//				TC2, 0,			TC6_IRQn  =>  TC6_Handler()		4, 5
-//				TC2, 1,			TC7_IRQn  =>  TC7_Handler()		3, 10
-//				TC2, 2,			TC8_IRQn  =>  TC8_Handler()		11, 12
-void startTimer(Tc *tc, uint32_t channel, IRQn_Type irq, uint32_t frequency) {
-	pmc_set_writeprotect(false);
-	pmc_enable_periph_clk((uint32_t)irq);
-	TC_Configure(tc, channel, TC_CMR_WAVE | TC_CMR_WAVSEL_UP_RC | TC_CMR_TCCLKS_TIMER_CLOCK4);
-	uint32_t rc = VARIANT_MCK/128/frequency; //128 because we selected TIMER_CLOCK4 above
-	TC_SetRA(tc, channel, rc/2); //50% high, 50% low
-	TC_SetRC(tc, channel, rc);
-	TC_Start(tc, channel);
-	tc->TC_CHANNEL[channel].TC_IER=TC_IER_CPCS;
-	tc->TC_CHANNEL[channel].TC_IDR=~TC_IER_CPCS;
-	NVIC_EnableIRQ(irq);
-}
 
 // You can also use hardware SPI for ultra-fast writes by omitting the data
 // and clock pin arguments.  This is faster, but the data and clock are then
@@ -191,25 +159,6 @@ float fxFltVars[3][1];				// MEO: float variables
 bool randProg = true;
 bool lightsOn = true;
 
-// function prototypes, leave these be :)
-/*void ProgramSolidColor(byte idx);		//pburgess
-void ProgramRotatingRainbow(byte idx);	//pburgess
-void ProgramSineWave(byte idx);			//pburgess
-void ProgramWavyFlag(byte idx);			//pburgess
-void ProgramPulse(byte idx);			//elmerfud
-void ProgramOff(byte idx);				//MEO
-void ProgramPhasing(byte idx);			//MEO
-void ProgramRandomStrobe(byte idx);		//MEO
-void ProgramSimplexNoise(byte idx);		//MEO & happyinmotion
-void ProgramChaser(byte idx);			//MEO & Paul Martis
-void ProgramFlames(byte idx);			//MEO & By Christopher De Vries
-void ProgramLarsonScanner(byte idx);	//MEO
-void ProgramStrobeFade(byte idx);		//MEO
-void ProgramOldFashioned(byte idx);		//MEO
-void ProgramRotatingCircles(byte idx);  //MEO
-void ProgramRainbowWhite(byte idx);		//MEO
-void ProgramRandomSplash(byte idx);		//MEO*/
-
 // Chaser functions
 void SetChaserColor(uint8_t bulb, int color, byte idx);
 void FillChaserSeq(uint8_t count, uint16_t sequence,
@@ -220,8 +169,9 @@ void crossfadeSimple(void);
 void crossfadeWipe(void);
 void crossfadeDither(void);
 
-void renderAlpha03(void);
-void LightFrame();
+volatile void CheckSwitches(void);
+volatile void LightFrame(void);
+
 byte getGamma(byte x);
 int HSVtoRGB(int h, byte s, byte v, int wheelLine);
 char FixedSine(int angle);
@@ -233,21 +183,21 @@ char FixedCosine(int angle);
 void (*renderEffect[])(byte) = {
 			ProgramOff,
 			//ProgramSolidColor,
-			//ProgramRotatingRainbow,
+			ProgramRotatingRainbow,
 			ProgramSineWave, //affected by FixedSine/FixedCosine issue - temp fixed by using proper Sin
-			//ProgramWavyFlag, //affected by FixedSine/FixedCosine issue -temp fixed by using proper Cos
+			ProgramWavyFlag, //affected by FixedSine/FixedCosine issue -temp fixed by using proper Cos
 			//ProgramPulse,
 			ProgramPhasing,
-			//ProgramSimplexNoise,
-			//ProgramRandomStrobe,
+			ProgramSimplexNoise,
+			ProgramRandomStrobe,
 			//ProgramFlames,
-			//ProgramChaser,
-			//ProgramLarsonScanner,
-			//ProgramOldFashioned,
-			ProgramRotatingCircles},
-			//ProgramRainbowWhite,
-			//ProgramStrobeFade,
-			//ProgramRandomSplash},
+			ProgramChaser,
+			ProgramLarsonScanner,
+			ProgramOldFashioned,
+			ProgramRotatingCircles,
+			ProgramRainbowWhite,
+			ProgramStrobeFade,
+			ProgramRandomSplash},
 	  (*renderAlpha[])(void) = {
 			//crossfadeDither,
 			//crossfadeWipe,
@@ -256,9 +206,8 @@ void (*renderEffect[])(byte) = {
 // ---------------------------------------------------------------------------
 
 void setup() {
-	//Timer function re-written for Ardunino Due
-	startTimer(TC1, 0, TC3_IRQn, 60); //lights - 60fps
-	startTimer(TC0, 0, TC0_IRQn, 67); //Buttons (67Hz = approx 15ms)
+	startTimer(TC1, 0, TC3_IRQn, 60, LightFrame);
+    startTimer(TC0, 0, TC0_IRQn, 67, CheckSwitches);
 
 	// Open serial communications and wait for port to open:
 	Serial.begin(115200);
@@ -285,31 +234,14 @@ void setup() {
 }
 
 void loop() {
-	//require by Ardunino compiler
+	//required by Ardunino compiler
 }
 
-// Timer interrupt handler - lights
-void TC3_Handler() {
-	// You must do TC_GetStatus to "accept" interrupt
-	// As parameters use the first two parameters used in startTimer (TC1, 0 in this case)
-	TC_GetStatus(TC1, 0);
-
-	LightFrame();
-}
-
-//Timer interrupt handler - buttons
-void TC0_Handler() {
-	// You must do TC_GetStatus to "accept" interrupt
-	// As parameters use the first two parameters used in startTimer (TC1, 0 in this case)
-	TC_GetStatus(TC0, 0);
-
-	CheckSwitches();
-}
 
 //###############################
 
 //pushbuttons
-void CheckSwitches() {
+volatile void CheckSwitches(void) {
 	static byte previousstate[NUMBUTTONS];
 	static byte currentstate[NUMBUTTONS];
 	static long lasttime;
@@ -345,7 +277,7 @@ void CheckSwitches() {
 	}
 }
 
-void LightFrame() {
+volatile void LightFrame(void) {
 	// Very first thing here is to issue the pixelString data generated from the
 	// *previous* LightFrame.  It's done this way on purpose because show() is
 	// roughly constant-time, so the refresh will always occur on a uniform
