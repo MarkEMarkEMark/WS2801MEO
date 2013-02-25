@@ -82,6 +82,7 @@ some future expansion if I'm ever foolish enough to attempt that. */
 #include "SPI.h"
 #include "DriverWS2801.h"
 #include "ARMtimer.h"
+#include "Keypad.h"
 
 #define pgm_read_byte(x) (*(x))
 #define NUM_PIXELS 100
@@ -102,6 +103,25 @@ some future expansion if I'm ever foolish enough to attempt that. */
 #define numSpacing 10 //was 4
 #define FULL_ONE_MINUS 255 //level range
 
+// Membrane 4x4 Keypad setup:
+const byte KEYPAD_ROWS = 4; //four KEYPAD_ROWS
+const byte KEYPAD_COLS = 4; //four columns
+//define the cymbols on the buttons of the keypads
+char keyTable[KEYPAD_ROWS][KEYPAD_COLS] = {
+  {'1','2','3','A'},
+  {'4','5','6','B'},
+  {'7','8','9','C'},
+  {'*','0','#','D'}
+};
+char matrixJustPressed = ' ';
+
+byte rowPins[KEYPAD_ROWS] = {39, 41, 43, 45}; //connect to the row pinouts of the keypad
+byte colPins[KEYPAD_COLS] = {47, 49, 51, 53}; //connect to the column pinouts of the keypad
+
+//initialize an instance of class NewKeypad
+Keypad customKeypad = Keypad(makeKeymap(keyTable), rowPins, colPins, KEYPAD_ROWS, KEYPAD_COLS);
+
+
 int ii, jj, kk, AA[] = {0, 0, 0};
 float uu, vv, ww, ss;
 int TT[] = {0x15, 0x38, 0x32, 0x2c, 0x0d, 0x13, 0x07, 0x2a};
@@ -110,23 +130,21 @@ int TT[] = {0x15, 0x38, 0x32, 0x2c, 0x0d, 0x13, 0x07, 0x2a};
 #define damping 0.90
 float dampingTable[100];
 
-//multiple button handling by ladyada: http://www.adafruit.com/blog/2009/10/20/example-code-for-multi-button-checker-with-debouncing/
-// This code modified by Mark Ortiz for Due
-//Buttons initialisation
-//if you want, you can even run the button checker in the background, which can make for a very easy interface. Remember that you’ll need to clear “just pressed”, etc. after checking or it will be “stuck” on
-#define DEBOUNCE 10  // button debouncer, how many ms to debounce, 5+ ms is usually plenty
-// here is where we define the buttons that we'll use. button "1" is the first, button "6" is the 6th, etc
-byte buttons[] = {22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32}; // the analog A0-15 pins are also known as 54+ on Mega
-// This handy macro lets us determine how big the array up above is, by checking the size
-#define NUMBUTTONS sizeof(buttons)
-// we will track if a button is just pressed, just released, or 'currently pressed'
-volatile byte pressed[NUMBUTTONS], justpressed[NUMBUTTONS], justreleased[NUMBUTTONS];
+int numPrograms = 0;
 
 //buttons
+#define BUTTON_PROG_UP 0
+#define BUTTON_RANDOM 6
 #define BUTTON_ONOFF 7
 //states
 bool justPressedOnOff, desireOff, turningOff, turningOn, isOff;
 bool desireRandom = true;
+bool desireProgChangeUp = false;
+bool desireProgChangeDn = false;
+int nextProgram = 1;
+int nextPattern = 0; //ToDo
+int nextFade = 0; //ToDo
+int brightness = 255; //ToDo
 
 // You can also use hardware SPI for ultra-fast writes by omitting the data
 // and clock pin arguments.  This is faster, but the data and clock are then
@@ -169,6 +187,12 @@ void crossfadeSimple(void);
 void crossfadeWipe(void);
 void crossfadeDither(void);
 
+//Programs
+void ProgramOff(byte idx);
+void ProgramLarsonScanner(byte idx);
+void ProgramRandomSplash(byte idx);
+void ProgramStrobeFade(byte idx);
+
 volatile void CheckSwitches(void);
 volatile void LightFrame(void);
 
@@ -182,22 +206,22 @@ char FixedCosine(int angle);
 // simply append new ones to the appropriate list here:
 void (*renderEffect[])(byte) = {
 			ProgramOff,
-			//ProgramSolidColor,
+			ProgramSolidColor,
 			ProgramRotatingRainbow,
 			ProgramSineWave, //affected by FixedSine/FixedCosine issue - temp fixed by using proper Sin
 			ProgramWavyFlag, //affected by FixedSine/FixedCosine issue -temp fixed by using proper Cos
-			//ProgramPulse,
+			ProgramPulse,
 			ProgramPhasing,
 			ProgramSimplexNoise,
 			ProgramRandomStrobe,
-			//ProgramFlames,
+			ProgramFlames,
 			ProgramChaser,
 			ProgramLarsonScanner,
 			ProgramOldFashioned,
 			ProgramRotatingCircles,
 			ProgramRainbowWhite,
-			ProgramStrobeFade,
-			ProgramRandomSplash},
+			ProgramRandomSplash,
+			ProgramStrobeFade},
 	  (*renderAlpha[])(void) = {
 			//crossfadeDither,
 			//crossfadeWipe,
@@ -226,54 +250,90 @@ void setup() {
 
 	fxIntVars[backImgIdx][0] = 1;           // Mark back image as initialized
 
-	// Pushbuttons: Make input & enable pull-up resistors on switch pins
-	for (byte button =0; button< NUMBUTTONS; button++) {
-		pinMode(buttons[button], INPUT);
-		digitalWrite(buttons[button], HIGH);
+	//set up the damping table (replaces pow function which is far too slow)
+	for (int table = 0; table < 100; table++)
+	{
+		dampingTable[table] = pow(damping, table);
 	}
+
+	numPrograms = (sizeof(renderEffect) / sizeof(renderEffect[0])) - 1 ;//remember includes ProgramOff, so subtracted 1
+	Serial.print("Number of programs: ");Serial.println(numPrograms);
 }
 
 void loop() {
-	//required by Ardunino compiler
+	//required by Ardunino compiler - but all my code in interrupt handlers
 }
 
 
 //###############################
 
 //pushbuttons
+//ToDo: Utilise keypad to allow direct choosing of programs - e.g.
+//		"A01" - chooses program 1
+//		"A08" - chooses program 8 (if higher than max, then just ignore)
+//		"B01" - chooses fade 1
+//		"C01" - brightess level 1
+//		"D01" - color variation? or add rotary dialer for this?
+//		- needs to accept sequence of letter and two numbers (ignore other combos)
 volatile void CheckSwitches(void) {
-	static byte previousstate[NUMBUTTONS];
-	static byte currentstate[NUMBUTTONS];
-	static long lasttime;
-	byte index;
-	 
-	if (millis() < lasttime) {
-		// we wrapped around, lets just try again
-		lasttime = millis();
-	}
-	 
-	if ((lasttime + DEBOUNCE) > millis()) {
-		// not enough time has passed to debounce
-		return;
-	}
-	 
-	// ok we have waited DEBOUNCE milliseconds, lets reset the timer
-	lasttime = millis();
-	 
-	for (index = 0; index < NUMBUTTONS; index++) {
-		currentstate[index] = digitalRead(buttons[index]);   // read the button
-		if (currentstate[index] == previousstate[index]) {
-			if ((pressed[index] == LOW) && (currentstate[index] == LOW)) {
-				// just pressed
-				justpressed[index] = 1;
-			}
-			else if ((pressed[index] == HIGH) && (currentstate[index] == HIGH)){
-				// just released
-				justreleased[index] = 1;
-			}
-			pressed[index] = !currentstate[index];  // remember, digital HIGH means NOT pressed
+	byte frontImgIdx = 1 - backImgIdx;
+	char customKey = customKeypad.getKey();
+  
+	if (customKey){
+		Serial.println(customKey);
+		switch (customKey) {
+			case '*':
+				desireOff = !desireOff;
+				if (desireOff) {
+					Serial.print("Desire off: ["); Serial.print(fxIdx[frontImgIdx]); Serial.print(" / "); Serial.print(fxIdx[backImgIdx]); Serial.print("] "); Serial.println(tCounter); 
+				} else {
+					Serial.print("Desire on: ["); Serial.print(fxIdx[frontImgIdx]); Serial.print(" / "); Serial.print(fxIdx[backImgIdx]); Serial.print("] "); Serial.println(tCounter); 
+				}
+				break;
+			case '#':
+				desireRandom = !desireRandom;
+				if (desireRandom) {
+					Serial.print("Random Program: ["); Serial.print(fxIdx[frontImgIdx]); Serial.print(" / "); Serial.print(fxIdx[backImgIdx]); Serial.print("] "); Serial.println(tCounter); 
+				} else {
+					Serial.print("Fixed Program: ["); Serial.print(fxIdx[frontImgIdx]); Serial.print(" / "); Serial.print(fxIdx[backImgIdx]); Serial.print("] "); Serial.println(tCounter); 
+				}
+				break;
+			case '1':
+				desireProgChangeUp = true;
+				Serial.print("Desire Prog Change Up: ["); Serial.print(fxIdx[frontImgIdx]); Serial.print(" / "); Serial.print(fxIdx[backImgIdx]); Serial.print("] "); Serial.println(tCounter); 
+				break;
+			case '2':
+				desireProgChangeDn = true;
+				Serial.print("Desire Prog Change Down: ["); Serial.print(fxIdx[frontImgIdx]); Serial.print(" / "); Serial.print(fxIdx[backImgIdx]); Serial.print("] "); Serial.println(tCounter);
+				break;
+			case '3':
+				break;
+			case '4':
+				break;
+			case '5':
+				break;
+			case '6':
+				break;
+			case '7':
+				break;
+			case '8':
+				break;
+			case '9':
+				break;
+			case '0':
+				break;
+			case 'A':
+				break;
+			case 'B':
+				break;
+			case 'C':
+				break;
+			case 'D':
+				break;
 		}
-		previousstate[index] = currentstate[index];   // keep a running tally of the buttons
+		customKey = ' ';
+	} else {
+		customKey = ' ';
 	}
 }
 
@@ -293,17 +353,6 @@ volatile void LightFrame(void) {
 		*backPtr = &imgData[backImgIdx][0],
 		r, g, b;
 	int  i;
-
-	//handle on/off button being pressed - set desired action
-	if (justpressed[BUTTON_ONOFF]) {
-		justpressed[BUTTON_ONOFF] = 0;
-		desireOff = !desireOff;
-		if (desireOff) {
-			Serial.print("Desire off: ["); Serial.print(fxIdx[frontImgIdx]); Serial.print(" / "); Serial.print(fxIdx[backImgIdx]); Serial.print("] "); Serial.println(tCounter); 
-		} else {
-			Serial.print("Desire on: ["); Serial.print(fxIdx[frontImgIdx]); Serial.print(" / "); Serial.print(fxIdx[backImgIdx]); Serial.print("] "); Serial.println(tCounter); 
-		}
-	}
 
 	// Always render back image based on current effect index:
 	(*renderEffect[fxIdx[backImgIdx]])(backImgIdx);
@@ -368,16 +417,41 @@ volatile void LightFrame(void) {
 		}
 	}
 
+	if (desireProgChangeUp || desireProgChangeDn)	{
+		tCounter = 0;
+	}
 
 	if(tCounter == 0) { // Transition start
 		if (turningOff) {
 			fxIdx[frontImgIdx] = 0;
 		} else {
-			// Randomly pick next image effect and alpha effect indices:
-			fxIdx[frontImgIdx] = 1 + random((sizeof(renderEffect) / sizeof(renderEffect[0])) - 1); //-1, +1 so that doesn't run ProgramOff()
+			if (desireRandom) {
+				// Randomly pick next image effect
+				fxIdx[frontImgIdx] = 1 + random(numPrograms); //+1 so that doesn't run ProgramOff()
+			} else {
+				if (desireProgChangeUp){
+					desireProgChangeUp = false;
+					fxIdx[frontImgIdx] = 1 + nextProgram;
+					if (fxIdx[frontImgIdx] == numPrograms + 1) { //loop if necessary
+						fxIdx[frontImgIdx] = 1;
+					}
+					Serial.print("Next Program +: " ); Serial.println(fxIdx[frontImgIdx]);
+				} else if (desireProgChangeDn) {
+					desireProgChangeDn = false;
+					fxIdx[frontImgIdx] = nextProgram - 1;
+					if (fxIdx[frontImgIdx] == 0) { //loop if necessary
+						fxIdx[frontImgIdx] = numPrograms;
+					}
+					Serial.print("Next Program -: " ); Serial.println(fxIdx[frontImgIdx]);
+				}
+			}
 		}
+		nextProgram  = fxIdx[frontImgIdx];
 
+		//randomly pick next fade effect
 		fxIdx[2] = random((sizeof(renderAlpha) / sizeof(renderAlpha[0])));
+		nextFade = fxIdx[2];
+
 		transitionTime = FADE_FRAMES;
 		fxInitialised[frontImgIdx] = false; // Effect not yet initialized
 		fxInitialised[2] = false; // Transition not yet initialized
@@ -1844,7 +1918,7 @@ void ProgramRandomSplash(byte idx){
 				splash = 255;
 			}
 			//to do: make only the level accumulate, so that whites stand out more. (If possible!)
-			//can change color, if use HSVtoRGB((fxIntVars[idx][0] + splash * 10) % 1536,...
+			//can change color, if use hsv2rgb((fxIntVars[idx][0] + splash * 10) % 1536,...
 			color = HSVtoRGB(fxIntVars[idx][0], 255 - splash, splash, 0);
 			*ptr++ = color >> 16; *ptr++ = color >> 8; *ptr++ = color;
 		}
