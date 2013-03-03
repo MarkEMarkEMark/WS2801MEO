@@ -1,8 +1,13 @@
+//BUG LIST:
+// - Phaser seems to lock buttons
+
 /* Adapted by MEO for WS2801 LED bulb string 
 Programmed for the Due - so 100+ bulbs and fast frame rates now possible! */
 
 /* ToDo: Functionallity
 	- Frame rate controlled by potentiometer
+	-	or... Speed parameter (e.g. Rainbow's: IntVar 0; Sine's: IntVar 1; Phasing's rate/switchHalf/Full)
+	-	global speed ver is mapped onto values suitable for Program
 	- buttons to change programs / variations / choose random / switch off
 	- replace common vars with named ones (like current frame, main hue etc)
 	- choose fade effect button
@@ -10,9 +15,6 @@ Programmed for the Due - so 100+ bulbs and fast frame rates now possible! */
 	- use table similar to dampingTable for larson/random strobe - so can have variable level of trail fade
 
 /* ToDo: Patterns Ideas
-
-- rainbow fade: (https://www.youtube.com/watch?v=xTkiNIJkWrY   end of http://www.youtube.com/watch?v=9wZhDc0PnWg)
-  primary/secondary colours from 255 to 0 brightness before next colour
 
 - various from: https://www.youtube.com/watch?v=zMKf98MpaUg / http://www.youtube.com/watch?v=w557LuVueXg&feature=player_embedded
 
@@ -83,14 +85,14 @@ some future expansion if I'm ever foolish enough to attempt that. */
 #include "DriverWS2801.h"
 #include "ARMtimer.h"
 #include "Keypad.h"
+#include "LiquidCrystal.h"
 
 #define pgm_read_byte(x) (*(x))
 #define NUM_PIXELS 100
 #define FRAMES_PER_SECOND 60
 #define FADE_FRAMES 256   //number of frames to crossfade within
-#define STAY_FRAMES 300 //number of frames to show a program - if multiple of half num pixels, then some programs won't run into each other (eg random strobe fade)
+#define STAY_FRAMES 2000 //number of frames to show a program - if multiple of half num pixels, then some programs won't run into each other (eg random strobe fade)
 #define MAX_LEVEL 256 //max R,G,B or S, V levels (note: need to subtract one to make 0 based)
-#define MAX_LEVEL0 (MAX_LEVEL - 1)
 
 #define PI 3.14159265
 
@@ -102,6 +104,9 @@ some future expansion if I'm ever foolish enough to attempt that. */
 #define onesixth 0.166666667
 #define numSpacing 10 //was 4
 #define FULL_ONE_MINUS 255 //level range
+int ii, jj, kk, AA[] = {0, 0, 0};
+float uu, vv, ww, ss;
+int TT[] = {0x15, 0x38, 0x32, 0x2c, 0x0d, 0x13, 0x07, 0x2a};
 
 // Membrane 4x4 Keypad setup:
 const byte KEYPAD_ROWS = 4; //four KEYPAD_ROWS
@@ -111,40 +116,42 @@ char keyTable[KEYPAD_ROWS][KEYPAD_COLS] = {
   {'1','2','3','A'},
   {'4','5','6','B'},
   {'7','8','9','C'},
-  {'*','0','#','D'}
-};
+  {'*','0','#','D'}};
 char matrixJustPressed = ' ';
-
 byte rowPins[KEYPAD_ROWS] = {39, 41, 43, 45}; //connect to the row pinouts of the keypad
 byte colPins[KEYPAD_COLS] = {47, 49, 51, 53}; //connect to the column pinouts of the keypad
-
-//initialize an instance of class NewKeypad
 Keypad customKeypad = Keypad(makeKeymap(keyTable), rowPins, colPins, KEYPAD_ROWS, KEYPAD_COLS);
 
+//buttons
+#define BUTTON_PROG_UP 0
+#define BUTTON_RANDOM 6
+#define BUTTON_ONOFF 7
 
-int ii, jj, kk, AA[] = {0, 0, 0};
-float uu, vv, ww, ss;
-int TT[] = {0x15, 0x38, 0x32, 0x2c, 0x0d, 0x13, 0x07, 0x2a};
+//states
+bool justPressedOnOff, desireOff, turningOff, turningOn, isOff;
+bool desireRandom = true;
+bool desireProgChangeUp = false;
+bool desireProgChangeDn = false;
+bool desirePattChangeUp = false;
+bool desirePattChangeDn = false;
+bool desireFadeChangeUp = false;
+bool desireFadeChangeDn = false;
+int nextProgram = 1;
+int nextPattern = 0; //ToDo
+int nextFade = 0; //ToDo
+int brightness = 8; //ToDo
+int speed = 5; //ToDo
+
+
+// initialize the LCD library with the numbers of the interface pins
+LiquidCrystal lcd(12, 11, 5, 4, 3, 2);
+
 
 //table of powers for damping used in ProgramRandomSplash [pow(damping, frame) - damping^frame]
 #define damping 0.90
 float dampingTable[100];
 
 int numPrograms = 0;
-
-//buttons
-#define BUTTON_PROG_UP 0
-#define BUTTON_RANDOM 6
-#define BUTTON_ONOFF 7
-//states
-bool justPressedOnOff, desireOff, turningOff, turningOn, isOff;
-bool desireRandom = true;
-bool desireProgChangeUp = false;
-bool desireProgChangeDn = false;
-int nextProgram = 1;
-int nextPattern = 0; //ToDo
-int nextFade = 0; //ToDo
-int brightness = 255; //ToDo
 
 // You can also use hardware SPI for ultra-fast writes by omitting the data
 // and clock pin arguments.  This is faster, but the data and clock are then
@@ -172,15 +179,16 @@ int fxIntVars[3][11],				// Effect instance variables (explained later)
 	fxFrameDelayCount[3],		// MEO: counter for fxFrameDelay
 	tCounter   = -1,				// Countdown to next transition
 	transitionTime;					// Duration (in frames) of current transition
-float fxFltVars[3][1];				// MEO: float variables
+float fxFltVars[3][6];				// MEO: float variables
+bool fxBlnVars[3][3];				// MEO: bool variables
 
 bool randProg = true;
 bool lightsOn = true;
 
 // Chaser functions
-void SetChaserColor(uint8_t bulb, int color, byte idx);
-void FillChaserSeq(uint8_t count, uint16_t sequence,
-                               uint8_t span_size, int startColor, int (*sequence_func)(uint16_t sequence, int startColor), byte idx);
+void SetChaserColor(int bulb, int color, byte idx);
+void FillChaserSeq(int count, int sequence,
+                               int span_size, int startColor, int (*sequence_func)(int sequence, int startColor), byte idx);
 
 // Crossfade functions
 void crossfadeSimple(void);
@@ -206,22 +214,23 @@ char FixedCosine(int angle);
 // simply append new ones to the appropriate list here:
 void (*renderEffect[])(byte) = {
 			ProgramOff,
-			ProgramSolidColor,
-			ProgramRotatingRainbow,
-			ProgramSineWave, //affected by FixedSine/FixedCosine issue - temp fixed by using proper Sin
-			ProgramWavyFlag, //affected by FixedSine/FixedCosine issue -temp fixed by using proper Cos
-			ProgramPulse,
-			ProgramPhasing,
-			ProgramSimplexNoise,
-			ProgramRandomStrobe,
-			ProgramFlames,
-			ProgramChaser,
-			ProgramLarsonScanner,
-			ProgramOldFashioned,
-			ProgramRotatingCircles,
-			ProgramRainbowWhite,
-			ProgramRandomSplash,
-			ProgramStrobeFade},
+			//ProgramSolidColor,
+			//ProgramRotatingRainbow,
+			//ProgramSineWave, //affected by FixedSine/FixedCosine issue - temp fixed by using proper Sin
+			//ProgramWavyFlag, //affected by FixedSine/FixedCosine issue -temp fixed by using proper Cos
+			//ProgramPulse,
+			//ProgramPhasing,
+			//ProgramSimplexNoise,
+			//ProgramRandomStrobe,
+			//ProgramFlames,
+			//ProgramChaser,
+			//ProgramLarsonScanner,
+			//ProgramOldFashioned,
+			//ProgramRotatingCircles,
+			//ProgramRainbowWhite,
+			//ProgramRandomSplash,
+			//ProgramStrobeFade,
+			ProgramComet},
 	  (*renderAlpha[])(void) = {
 			//crossfadeDither,
 			//crossfadeWipe,
@@ -230,8 +239,11 @@ void (*renderEffect[])(byte) = {
 // ---------------------------------------------------------------------------
 
 void setup() {
-	startTimer(TC1, 0, TC3_IRQn, 60, LightFrame);
-    startTimer(TC0, 0, TC0_IRQn, 67, CheckSwitches);
+	// set up the LCD's number of columns and rows: 
+	lcd.begin(16,2);
+
+	startTimer(TC1, 0, TC3_IRQn, 61, LightFrame);  //61/67 are primes, so should never be a same time
+    //startTimer(TC0, 0, TC0_IRQn, 67, CheckSwitches);
 
 	// Open serial communications and wait for port to open:
 	Serial.begin(115200);
@@ -258,6 +270,10 @@ void setup() {
 
 	numPrograms = (sizeof(renderEffect) / sizeof(renderEffect[0])) - 1 ;//remember includes ProgramOff, so subtracted 1
 	Serial.print("Number of programs: ");Serial.println(numPrograms);
+
+	//initial display values:
+	lcd.setCursor(15, 1);
+	lcd.print("#");
 }
 
 void loop() {
@@ -292,10 +308,13 @@ volatile void CheckSwitches(void) {
 				break;
 			case '#':
 				desireRandom = !desireRandom;
+				lcd.setCursor(15, 1);
 				if (desireRandom) {
 					Serial.print("Random Program: ["); Serial.print(fxIdx[frontImgIdx]); Serial.print(" / "); Serial.print(fxIdx[backImgIdx]); Serial.print("] "); Serial.println(tCounter); 
+					lcd.print("#");
 				} else {
 					Serial.print("Fixed Program: ["); Serial.print(fxIdx[frontImgIdx]); Serial.print(" / "); Serial.print(fxIdx[backImgIdx]); Serial.print("] "); Serial.println(tCounter); 
+					lcd.print("=");
 				}
 				break;
 			case '1':
@@ -307,20 +326,48 @@ volatile void CheckSwitches(void) {
 				Serial.print("Desire Prog Change Down: ["); Serial.print(fxIdx[frontImgIdx]); Serial.print(" / "); Serial.print(fxIdx[backImgIdx]); Serial.print("] "); Serial.println(tCounter);
 				break;
 			case '3':
+				speed += 1;
+				if (speed == 10) {
+					speed = 9;
+				}
+				Serial.print("Speed Up: ["); Serial.println(speed); 
 				break;
 			case '4':
+				speed -= 1;
+				if (speed == 0) {
+					speed = 1;
+				}
+				Serial.print("Speed Down: ["); Serial.println(speed);
 				break;
 			case '5':
+				brightness += 1;
+				if (brightness == 9) {
+					brightness = 8;
+				}
+				Serial.print("Brightness Up: ["); Serial.println(brightness); 
 				break;
 			case '6':
+				brightness -= 1;
+				if (brightness == 0) {
+					brightness = 1;
+				}
+				Serial.print("Brightness Down: ["); Serial.println(brightness);
 				break;
 			case '7':
+				desirePattChangeUp = true;
+				Serial.print("Desire Pattern Change Up: ["); Serial.print(fxIdx[frontImgIdx]); Serial.print(" / "); Serial.print(fxIdx[backImgIdx]); Serial.print("] "); Serial.println(tCounter); 
 				break;
 			case '8':
+				desirePattChangeDn = true;
+				Serial.print("Desire Pattern Change Down: ["); Serial.print(fxIdx[frontImgIdx]); Serial.print(" / "); Serial.print(fxIdx[backImgIdx]); Serial.print("] "); Serial.println(tCounter);
 				break;
 			case '9':
+				desireFadeChangeUp = true;
+				Serial.print("Desire Fade Change Up: ["); Serial.print(fxIdx[frontImgIdx]); Serial.print(" / "); Serial.print(fxIdx[backImgIdx]); Serial.print("] "); Serial.println(tCounter); 
 				break;
 			case '0':
+				desireFadeChangeDn = true;
+				Serial.print("Desire Fade Change Down: ["); Serial.print(fxIdx[frontImgIdx]); Serial.print(" / "); Serial.print(fxIdx[backImgIdx]); Serial.print("] "); Serial.println(tCounter);
 				break;
 			case 'A':
 				break;
@@ -345,6 +392,8 @@ volatile void LightFrame(void) {
 	// rendering and compositing code is not constant-time, and that
 	// unevenness would be apparent if show() were called at the end.
 	pixelString.show();
+
+	CheckSwitches(); //used to have it's own interrupt, but seems ok sharing - test both ways fully
 
 	// tCounter counts from *minus* STAY_FRAMEs to 0, where transition starts,
 	// then up to *plus* FADE_FRAMES
@@ -505,10 +554,11 @@ volatile void LightFrame(void) {
 void ProgramOff(byte idx) {
 	// Only needs to be rendered once, when effect is initialized:
 	if(fxInitialised[idx] == false) {
-		byte *ptr = &imgData[idx][0],
-			r = 0, g = 0, b = 0;
+		lcd.setCursor(0, 0);
+		lcd.print("Off             ");
+		byte *ptr = &imgData[idx][0];
 		for(int i=0; i<NUM_PIXELS; i++) {
-			*ptr++ = r; *ptr++ = g; *ptr++ = b;
+			*ptr++ = 0; *ptr++ = 0; *ptr++ = 0;
 		}
 		fxInitialised[idx] = true; // Effect initialized
 	}
@@ -519,10 +569,14 @@ void ProgramOff(byte idx) {
 void ProgramSolidColor(byte idx) {
 	// Only needs to be rendered once, when effect is initialized:
 	if(fxInitialised[idx] == false) {
-		byte *ptr = &imgData[idx][0],
-			r = random(256), g = random(256), b = random(256);
+		lcd.setCursor(0, 0);
+		lcd.print("Solid Colour    ");
+		int color;
+		color = HSVtoRGB(random(1536), 255, 255, 0);
+
+		byte *ptr = &imgData[idx][0];
 		for(int i=0; i<NUM_PIXELS; i++) {
-			*ptr++ = r; *ptr++ = g; *ptr++ = b;
+			*ptr++ = color >> 16; *ptr++ = color >> 8; *ptr++ = color;
 		}
 		fxInitialised[idx] = true; // Effect initialized
 	}
@@ -534,6 +588,8 @@ void ProgramSolidColor(byte idx) {
 // practically part of the Geneva Convention by now.
 void ProgramRotatingRainbow(byte idx) {
 	if(fxInitialised[idx] == false) { // Initialize effect?
+		lcd.setCursor(0, 0);
+		lcd.print("Rainbow         ");
 		// Number of repetitions (complete loops around color wheel); any
 		// more than 4 per meter just looks too chaotic and un-rainbow-like.
 		// Store as hue 'distance' around complete belt:
@@ -583,6 +639,8 @@ void ProgramRotatingRainbow(byte idx) {
 // Sine wave chase effect
 void ProgramSineWave(byte idx) {
 	if(fxInitialised[idx] == false) { // Initialize effect?
+		lcd.setCursor(0, 0);
+		lcd.print("Sine Wave       ");
 		fxIntVars[idx][0] = random(3) * 512; //random(1536); // Random hue
 		// Number of repetitions (complete loops around color wheel);
 		// any more than 4 per meter just looks too chaotic.
@@ -692,6 +750,8 @@ void ProgramWavyFlag(byte idx) {
 	int i, sum, s, x;
 	int  idx1, idx2, a, b;
 	if(fxInitialised[idx] == false) { // Initialize effect?
+		lcd.setCursor(0, 0);
+		lcd.print("Wavy Flag       ");
 		fxIntVars[idx][0] = 720 + random(720); // Wavyness
 		fxIntVars[idx][1] = 1;//4 + random(10);    // Wave speed
 		fxIntVars[idx][2] = 200 + random(200); // Wave 'puckeryness'
@@ -743,6 +803,8 @@ void ProgramWavyFlag(byte idx) {
 // Pulse entire image with solid color
 void ProgramPulse(byte idx) {
 	if(fxInitialised[idx] == false) {
+		lcd.setCursor(0, 0);
+		lcd.print("Pulse           ");
 		fxIntVars[idx][0] = 50; // Pulse ammount min (v)
 		fxIntVars[idx][1] = 250; // Pulse ammount max (v)
 		fxIntVars[idx][2] = random(1536); // Random hue
@@ -791,6 +853,9 @@ void ProgramPulse(byte idx) {
 //ToDo: use forthcoming visual echo to interpolate between frames for smoother movement
 void ProgramFlames(byte idx){
 	if(fxInitialised[idx] == false) { // Initialize effect?
+		lcd.setCursor(0, 0);
+		lcd.print("Flames          ");
+
 		fxIntVars[idx][0] = 101; //intensity Hi
 		fxIntVars[idx][1] = 0; //intensity Lo
 		fxIntVars[idx][2] = 101; //transition Hi
@@ -837,317 +902,368 @@ void ProgramFlames(byte idx){
 //      also use turn to swap phase 1.0 / 0.0
 //		e.g. fstep 0 -> 400 = 1 0 1; 400 -> = 0 1 0; 0 -> 400 = 0 1 0; 400 -> 0 = 1 0 1
 
+//why does this program break the button pressing??
+
+#define rate 1000.0 //2000.0 //size or rate of change, or how much moves at a time, or summat (larger takes longer)
+#define switchHalf 1000 //2000 //should be related to rate (e.g. rate=100.0, this 100)
+#define switchFull 2000 //4000
+
 void ProgramPhasing(byte idx) {
 	if(fxInitialised[idx] == false) {
-		fxIntVars[idx][0] = 1500; //size
-		fxIntVars[idx][1] = 128; // Wave center
-		fxIntVars[idx][2] = 127; // Wave width (center+ width, and center - width must not pass 255 or 0)
+		lcd.setCursor(0, 0);
+		lcd.print("Phasing         ");
+
+		fxIntVars[idx][0] = 0;  //start step (fStep in 2012 version) - freq modifier
+		fxIntVars[idx][1] = random(32); //sub-pattern / variation
+		fxIntVars[idx][2] = 0; //pStep in 2012 version - phase modifier
 		fxIntVars[idx][3] = 1; //direction (1 forward / 0 backwards)
-		fxIntVars[idx][4] = random(18); //sub-pattern / variation
-		fxIntVars[idx][5] = 0; //turn - sub-sub-variation
-		fxIntVars[idx][6] = 0;  //start step (fStep in 2012 version) - freq modifier
-		fxIntVars[idx][7] = 0; //pStep in 2012 version - phase modifier
+		fxIntVars[idx][4] = 0; //turn - sub-sub-variation
+
+		//The following variables are used, but not necessarily initialised here
+		//fxFltVars[idx][0] - frequency Red
+		//fxFltVars[idx][1] - frequency Green
+		//fxFltVars[idx][2] - frequency Blue
+		//fxFltVars[idx][3] - phase Red
+		//fxFltVars[idx][4] - phase Green
+		//fxFltVars[idx][5] - phase Blue
+		//fxBlnVars[idx][0] - red override (whether to override-and switch red channel off)
+		//fxBlnVars[idx][1] - green override
+		//fxBlnVars[idx][2] - blue override
+
+		fxBlnVars[idx][0] = false; //these may get over rided in following switch.
+		fxBlnVars[idx][1] = false; 
+		fxBlnVars[idx][2] = false;
+
+		// this switch displays the variation on the LCD, and sets the *fixed* values
+		// Note: the same variables are not always the fixed ones
+		// ToDo: put LCD varitions up for 20-31
+		lcd.setCursor(0, 1);
+		switch (fxIntVars[idx][1]) {
+			case 0:  //Wavey pastels (Green 'peak')
+				lcd.print("Wavey Pastels  ");
+
+				fxFltVars[idx][3] = 0;
+				fxFltVars[idx][4] = 2.0 * PI /3.0;
+				fxFltVars[idx][5] = 4.0 * PI /3.0;
+				break;
+			case 1: // subtly changing pastel
+				lcd.print("Subtle Pastels ");
+
+				fxFltVars[idx][3] = 0;
+				fxFltVars[idx][0] = 1.666;
+				fxFltVars[idx][1] = 2.666;
+				fxFltVars[idx][2] = 3.666;
+				break;
+			case 2: //White
+				lcd.print("White          ");
+
+				fxFltVars[idx][3] = 1.0;
+				fxFltVars[idx][4] = 1.0;
+				fxFltVars[idx][5] = 1.0;
+				break;
+			case 3: //Cyan/Red/White (Cyan 'peak')
+				lcd.print("Cyan / R / W   ");
+
+				fxFltVars[idx][3] = 0.0;
+				fxFltVars[idx][4] = 1.0;
+				fxFltVars[idx][5] = 1.0;
+				break;
+			case 4: //Magenta/Green/White (Magenta 'peak')
+				lcd.print("Magenta / G / W");
+
+				fxFltVars[idx][3] = 1.0;
+				fxFltVars[idx][4] = 0.0;
+				fxFltVars[idx][5] = 1.0;
+				break;
+			case 5: //Yellow/Blue/White (Yellow 'peak')
+				lcd.print("Yellow / B / W ");
+
+				fxFltVars[idx][3] = 1.0;
+				fxFltVars[idx][4] = 1.0;
+				fxFltVars[idx][5] = 0.0;
+				break;
+			case 6:  //nothing - a still pastel rainbow 
+				lcd.print("Still Pastels  ");
+
+				fxFltVars[idx][3] = 2.0 * PI /3.0;
+				fxFltVars[idx][4] = 4.0 * PI /3.0;
+				fxFltVars[idx][5] = 0.0;
+				fxFltVars[idx][0] = 0.06;
+				fxFltVars[idx][1] = 0.06;
+				fxFltVars[idx][2] = 0.06;
+				break;
+			case 7: //Evolving pastel wave - 6 sub variations
+				lcd.print("Evolving Pastel");
+				break;
+			case 8: //Red/Blue/Magenta (Red 'peak')
+				lcd.print("Red / B / M    ");
+
+				fxFltVars[idx][3] = 0.0;
+				fxFltVars[idx][4] = 2.0 * PI /3.0;
+				fxFltVars[idx][5] = 4.0 * PI /3.0;	
+				fxBlnVars[idx][1] = true; //switch off green channel
+				break;
+			case 9: //Green/Red/Yellow (Green 'peak')
+				lcd.print("Green / R / Y  ");
+
+				fxFltVars[idx][3] = 0.0;
+				fxFltVars[idx][4] = 2.0 * PI /3.0;
+				fxFltVars[idx][5] = 4.0 * PI /3.0;
+				fxBlnVars[idx][2] = true; //switch off blue channel
+				break;
+			case 10: //Blue/Green/Cyan (Blue 'peak')
+				lcd.print("Blue / G / C   ");
+
+				fxFltVars[idx][3] = 0.0;
+				fxFltVars[idx][4] = 4.0 * PI /3.0;
+				fxFltVars[idx][5] = 2.0 * PI /3.0;
+				fxBlnVars[idx][0] = true; //switch off red channel
+				break;
+			case 11: //Cyan/Green/Red/Magenta slightly askew (Cyan 'peak')
+				lcd.print("C / G / R / M  ");
+
+				fxFltVars[idx][3] = 0.0;
+				fxFltVars[idx][4] = 2.0 * PI /3.0;
+				fxFltVars[idx][5] = 1.0;
+				break;
+			case 12: //Magenta/Green/Blue/Cyan slightly askew (Magenta 'peak')
+				lcd.print("M / G / B / C  ");
+
+				fxFltVars[idx][3] = 1.0;
+				fxFltVars[idx][4] = 0.0;
+				fxFltVars[idx][5] = 2.0 * PI /3.0;
+				break;
+			case 13: //Yellow/Blue/Red/Cyan slightly askew (Yellow 'peak')
+				lcd.print("Y / B / R / C  ");
+
+				fxFltVars[idx][3] = 2.0 * PI /3.0;
+				fxFltVars[idx][4] = 1.0;
+				fxFltVars[idx][5] = 0.0;
+				break;
+			case 14:  //Green/Red/Yellow slightly askew (Green 'peak')
+			case 20: 
+			case 26:
+				lcd.print("G / R / Y      ");
+
+				fxFltVars[idx][3] = 0.0;
+				fxFltVars[idx][4] = 2.0 * PI /3.0;
+				fxFltVars[idx][5] = 4.0 * PI /3.0;
+				fxFltVars[idx][2] = 0.0;
+				break;
+			case 15:  //Blue/Green/Cyan slightly askew (Blue 'peak')
+			case 21:
+			case 27:
+				lcd.print("B / G / C      ");
+
+				fxFltVars[idx][3] = 4.0 * PI /3.0;
+				fxFltVars[idx][4] = 0.0;
+				fxFltVars[idx][5] = 2.0 * PI /3.0;
+				fxFltVars[idx][0] = 0.0;
+				break;
+			case 16:  //Red/Blue/Magenta slightly askew (Magenta 'peak')
+			case 22:
+			case 28:
+				lcd.print("R / B / M      ");
+				
+				fxFltVars[idx][3] = 2.0 * PI /3.0;
+				fxFltVars[idx][4] = 4.0 * PI /3.0;
+				fxFltVars[idx][5] = 0.0;
+				fxFltVars[idx][1] = 0.0;
+				break;
+			case 17: //Blue (White 'peak') - 'White' is a touch complementary color
+			case 23:
+			case 29:
+				lcd.print("Blue & White    ");
+
+				fxFltVars[idx][3] = 1.0;
+				fxFltVars[idx][4] = 1.0;
+				fxFltVars[idx][5] = 0.0;
+				fxFltVars[idx][2] = 0.0;
+				break;
+			case 18: //Red (White 'peak') - 'White' is a touch complementary color
+			case 24:
+			case 30:
+				lcd.print("Red & White     ");
+
+				fxFltVars[idx][3] = 0.0;
+				fxFltVars[idx][4] = 1.0;
+				fxFltVars[idx][5] = 1.0;
+				fxFltVars[idx][0] = 0.0;
+				break;
+			case 19: //Green (White 'peak') - 'White' is a touch complementary color
+			case 25:
+			case 31:
+				lcd.print("Green & White   ");
+
+				fxFltVars[idx][3] = 1.0;
+				fxFltVars[idx][4] = 0.0;
+				fxFltVars[idx][5] = 1.0;
+				fxFltVars[idx][1] = 0.0;
+				break;
+		}
+
+		fxFrameDelay[idx] = 0; //delay frame count
+		fxFrameDelayCount[idx] = 0; //delay frame
 
 		fxInitialised[idx] = true; // Effect initialized
 	}
 
+	// this switch sets the *variable* variables! (again, not necessarily the same ones)
+	switch (fxIntVars[idx][1]) {
+		case 0:  //Wavey pastels (Green 'peak')
+		case 2: //White
+		case 3: //Cyan/Red/White (Cyan 'peak')
+		case 4: //Magenta/Green/White (Magenta 'peak')
+		case 5: //Yellow/Blue/White (Yellow 'peak')
+		case 8: //Red/Blue/Magenta (Red 'peak')
+		case 9: //Green/Red/Yellow (Green 'peak')
+		case 10: //Blue/Green/Cyan (Blue 'peak')
+		case 11: //Cyan/Green/Red/Magenta slightly askew (Cyan 'peak')
+		case 12: //Magenta/Green/Blue/Cyan slightly askew (Magenta 'peak')
+		case 13: //Yellow/Blue/Red/Cyan slightly askew (Yellow 'peak')
+			fxFltVars[idx][0] = (float)fxIntVars[idx][0] / rate;
+			fxFltVars[idx][1] = (float)fxIntVars[idx][0] / rate;
+			fxFltVars[idx][2] = (float)fxIntVars[idx][0] / rate;
+			break;
+		case 1: // subtly changing pastel
+			fxFltVars[idx][4] = (2.0 * PI /360.0) * (float)fxIntVars[idx][0];
+			fxFltVars[idx][5] = (4.0 * PI /360.0) * (float)fxIntVars[idx][0];
+			break;
+		case 6: //Single primary (White 'peak') - 'White' is a touch complementary color
+			break;
+		case 7: //Evolving pastel wave - 6 sub variations
+			fxFltVars[idx][0] = (float)fxIntVars[idx][0] / rate;
+			fxFltVars[idx][1] = (float)fxIntVars[idx][0] / rate;
+			fxFltVars[idx][2] = (float)fxIntVars[idx][0] / rate;
+			float temp;
+			temp = (PI /360.0) * (float)fxIntVars[idx][0];
+			switch (fxIntVars[idx][4] % 6) {
+				case 0: //these sub variations are all pretty similar
+					fxFltVars[idx][3] = 0.0 * temp;
+					fxFltVars[idx][4] = 2.0 * temp;
+					fxFltVars[idx][5] = 4.0 * temp;
+					break;
+				case 2:
+					fxFltVars[idx][3] = 4.0 * temp;
+					fxFltVars[idx][4] = 0.0 * temp;
+					fxFltVars[idx][5] = 2.0 * temp;
+					break;
+				case 4:
+					fxFltVars[idx][3] = 2.0 * temp;
+					fxFltVars[idx][4] = 4.0 * temp;
+					fxFltVars[idx][5] = 0.0 * temp;
+					break;
+				case 1:
+					fxFltVars[idx][3] = 0.0 * temp;
+					fxFltVars[idx][4] = 4.0 * temp;
+					fxFltVars[idx][5] = 2.0 * temp;
+					break;
+				case 3:
+					fxFltVars[idx][3] = 4.0 * temp;
+					fxFltVars[idx][4] = 2.0 * temp;
+					fxFltVars[idx][5] = 0.0 * temp;
+					break;
+				case 5:
+					fxFltVars[idx][3] = 2.0 * temp;
+					fxFltVars[idx][4] = 0.0 * temp;
+					fxFltVars[idx][5] = 4.0 * temp;
+					break;
+			}
+			break;
+		case 14: //Green/Red/Yellow slightly askew (Green 'peak')
+		case 17: //Blue & White (White 'peak')
+			fxFltVars[idx][0] = (float)fxIntVars[idx][0] / rate; 
+			fxFltVars[idx][1] = (float)fxIntVars[idx][0] / rate; 
+			break;
+		case 15: //Blue/Green/Cyan slightly askew (Blue 'peak')
+		case 18: //Red & White (White 'peak')
+			fxFltVars[idx][1] = (float)fxIntVars[idx][0] / rate;
+			fxFltVars[idx][2] = (float)fxIntVars[idx][0] / rate; 
+			break;
+		case 16:  //Red/Blue/Magenta slightly askew (Magenta 'peak')
+		case 19: //Green & White (White 'peak')
+			fxFltVars[idx][0] = (float)fxIntVars[idx][0] / rate;
+			fxFltVars[idx][2] = (float)fxIntVars[idx][0] / rate;
+			break;
+
+		case 20: //Green/Magenta (Green 'peak')
+		case 23: //Magenta & White (White 'peak')
+			fxFltVars[idx][0] = 0;
+			fxFltVars[idx][1] = (float)fxIntVars[idx][0] / rate;
+			break;
+		case 21: //Cyan/Green (Cyan 'peak')
+		case 24: //Yellow & White (White 'peak')
+			fxFltVars[idx][1] = 0; //in case 17: 0 would make white/yellow
+			fxFltVars[idx][2] = (float)fxIntVars[idx][0] / rate; //in case 17: 0 would make white/weak mageneta
+			break;
+		case 22: //Magenta/Red (Magenta 'peak')
+		case 25: //Cyan/Green (Cyan 'peak') variation
+			fxFltVars[idx][0] = 0;
+			fxFltVars[idx][2] = (float)fxIntVars[idx][0] / rate;
+			break;
+
+		case 26: //Yellow/Green (Yellow 'peak')
+		case 29: //Cyan & White (White 'peak')
+			fxFltVars[idx][0] = (float)fxIntVars[idx][0] / rate;
+			fxFltVars[idx][1] = 0; // in case 14: 0 makes green/yellow
+			break;
+		case 27: //Cyan/Blue (Cyan 'peak')
+		case 30: //Cyan/Magenta (Cyan 'peak')
+			fxFltVars[idx][1] = (float)fxIntVars[idx][0] / rate;
+			fxFltVars[idx][2] = 0; //in case 17: 0 would make white/weak mageneta
+			break;
+		case 28:  //Magenta/Blue (Magenta 'peak')
+		case 31: //Cyan/White (White 'peak') variation
+			fxFltVars[idx][0] = (float)fxIntVars[idx][0] / rate;
+			fxFltVars[idx][2] = 0;
+			break;
+	}
+
 	byte *ptr = &imgData[idx][0];
 
-	float frequencyR_; //red freq
-	float frequencyG_;
-	float frequencyB_;
-	float phaseR_; //red phase
-	float phaseG_;
-	float phaseB_;
-	int r; //final red
-	int g;
-	int b;
-	bool redOff_; //whether to override-and switch red channel off
-	bool grnOff_;
-	bool bluOff_;
-
-	// this switch chooses a variation
-	switch (fxIntVars[idx][4] % 20)
-	{
-	case 0:  //Wavey pastels (Green 'peak')
-		phaseR_ = 0;
-		phaseG_ = 2.0 * PI /3.0;
-		phaseB_ = 4.0 * PI /3.0;
-		frequencyR_ = (float)fxIntVars[idx][6] / (float)fxIntVars[idx][0];
-		frequencyG_ = (float)fxIntVars[idx][6] / (float)fxIntVars[idx][0];
-		frequencyB_ = (float)fxIntVars[idx][6] / (float)fxIntVars[idx][0];
-		redOff_ = false; grnOff_ = false; bluOff_ = false;
-		break;
-	case 1: // subtly changing pastel
-		phaseR_ = 0;
-		phaseG_ = (2.0 * PI /360.0) * (float)fxIntVars[idx][7];
-		phaseB_ = (4.0 * PI /360.0) * (float)fxIntVars[idx][7];
-		frequencyR_ = 1.666;
-		frequencyG_ = 2.666;
-		frequencyB_ = 3.666;
-		redOff_ = false; grnOff_ = false; bluOff_ = false;
-		break;
-	case 2: //White
-		phaseR_ = 1.0;
-		phaseG_ = 1.0;
-		phaseB_ = 1.0;
-		frequencyR_ = (float)fxIntVars[idx][6] / (float)fxIntVars[idx][0];
-		frequencyG_ = (float)fxIntVars[idx][6] / (float)fxIntVars[idx][0];
-		frequencyB_ = (float)fxIntVars[idx][6] / (float)fxIntVars[idx][0];
-		redOff_ = false; grnOff_ = false; bluOff_ = false;
-		break;
-	case 3: //Cyan/Red/White (Cyan 'peak')
-		phaseR_ = 0.0;
-		phaseG_ = 1.0;
-		phaseB_ = 1.0;
-		frequencyR_ = (float)fxIntVars[idx][6] / (float)fxIntVars[idx][0];
-		frequencyG_ = (float)fxIntVars[idx][6] / (float)fxIntVars[idx][0];
-		frequencyB_ = (float)fxIntVars[idx][6] / (float)fxIntVars[idx][0];
-		redOff_ = false; grnOff_ = false; bluOff_ = false;
-		break;
-	case 4: //Magenta/Green/White (Magenta 'peak')
-		phaseR_ = 1.0;
-		phaseG_ = 0.0;
-		phaseB_ = 1.0;
-		frequencyR_ = (float)fxIntVars[idx][6] / (float)fxIntVars[idx][0];
-		frequencyG_ = (float)fxIntVars[idx][6] / (float)fxIntVars[idx][0];
-		frequencyB_ = (float)fxIntVars[idx][6] / (float)fxIntVars[idx][0];
-		redOff_ = false; grnOff_ = false; bluOff_ = false;
-		break;
-	case 5: //Yellow/Blue/White (Yellow 'peak')
-		phaseR_ = 1.0;
-		phaseG_ = 1.0;
-		phaseB_ = 0.0;
-		frequencyR_ = (float)fxIntVars[idx][6] / (float)fxIntVars[idx][0];
-		frequencyG_ = (float)fxIntVars[idx][6] / (float)fxIntVars[idx][0];
-		frequencyB_ = (float)fxIntVars[idx][6] / (float)fxIntVars[idx][0];
-		redOff_ = false; grnOff_ = false; bluOff_ = false;
-		break;
-	case 6: //Single primary (White 'peak') - 'White' is a touch complementary color
-		switch (fxIntVars[idx][5] % 3)
-		{
-		case 0:  //Red
-			phaseR_ = 0.0;
-			phaseG_ = 1.0;
-			phaseB_ = 1.0;
-			frequencyR_ = 0.0;
-			frequencyG_ = (float)fxIntVars[idx][6] / (float)fxIntVars[idx][0]; //0 would make white/yellow
-			frequencyB_ = (float)fxIntVars[idx][6] / (float)fxIntVars[idx][0]; //0 would make white/weak mageneta
-			break;
-		case 1: //Green
-			phaseR_ = 1.0;
-			phaseG_ = 0.0;
-			phaseB_ = 1.0;
-			frequencyR_ = (float)fxIntVars[idx][6] / (float)fxIntVars[idx][0];
-			frequencyG_ = 0.0;
-			frequencyB_ = (float)fxIntVars[idx][6] / (float)fxIntVars[idx][0];
-			break;
-		case 2: //Blue
-			phaseR_ = 1.0;
-			phaseG_ = 1.0;
-			phaseB_ = 0.0;
-			frequencyR_ = (float)fxIntVars[idx][6] / (float)fxIntVars[idx][0];
-			frequencyG_ = (float)fxIntVars[idx][6] / (float)fxIntVars[idx][0];
-			frequencyB_ = 0.0;
-			break;
-		}
-		redOff_ = false; grnOff_ = false; bluOff_ = false;
-		break;
-	case 7: //Evolving pastel wave - 6 sub variations
-		switch (fxIntVars[idx][5] % 6)
-		{
-		case 0: //these sub variations are all pretty similar
-			phaseR_ = 0;
-			phaseG_ = (2.0 * PI /360.0) * (float)fxIntVars[idx][7];
-			phaseB_ = (4.0 * PI /360.0) * (float)fxIntVars[idx][7];
-			frequencyR_ = (float)fxIntVars[idx][6] / (float)fxIntVars[idx][0];
-			frequencyG_ = (float)fxIntVars[idx][6] / (float)fxIntVars[idx][0];
-			frequencyB_ = (float)fxIntVars[idx][6] / (float)fxIntVars[idx][0];
-			break;
-		case 2:
-			phaseR_ = (4.0 * PI /360.0) * (float)fxIntVars[idx][7];
-			phaseG_ = 0;
-			phaseB_ = (2.0 * PI /360.0) * (float)fxIntVars[idx][7];
-			frequencyR_ = (float)fxIntVars[idx][6] / (float)fxIntVars[idx][0];
-			frequencyG_ = (float)fxIntVars[idx][6] / (float)fxIntVars[idx][0];
-			frequencyB_ = (float)fxIntVars[idx][6] / (float)fxIntVars[idx][0];
-			break;
-		case 4:
-			phaseR_ = (2.0 * PI /360.0) * (float)fxIntVars[idx][7];
-			phaseG_ = (4.0 * PI /360.0) * (float)fxIntVars[idx][7];
-			phaseB_ = 0;
-			frequencyR_ = (float)fxIntVars[idx][6] / (float)fxIntVars[idx][0];
-			frequencyG_ = (float)fxIntVars[idx][6] / (float)fxIntVars[idx][0];
-			frequencyB_ = (float)fxIntVars[idx][6] / (float)fxIntVars[idx][0];
-			break;
-		case 1:
-			phaseR_ = 0;
-			phaseG_ = (4.0 * PI /360.0) * (float)fxIntVars[idx][7];
-			phaseB_ = (2.0 * PI /360.0) * (float)fxIntVars[idx][7];
-			frequencyR_ = (float)fxIntVars[idx][6] / (float)fxIntVars[idx][0];
-			frequencyG_ = (float)fxIntVars[idx][6] / (float)fxIntVars[idx][0];
-			frequencyB_ = (float)fxIntVars[idx][6] / (float)fxIntVars[idx][0];
-			break;
-		case 3:
-			phaseR_ = (4.0 * PI /360) * (float)fxIntVars[idx][7];
-			phaseG_ = (2.0 * PI /360) * (float)fxIntVars[idx][7];
-			phaseB_ = 0;
-			frequencyR_ = (float)fxIntVars[idx][6] / (float)fxIntVars[idx][0];
-			frequencyG_ = (float)fxIntVars[idx][6] / (float)fxIntVars[idx][0];
-			frequencyB_ = (float)fxIntVars[idx][6] / (float)fxIntVars[idx][0];
-			break;
-		case 5:
-			phaseR_ = (2.0 * PI /360) * (float)fxIntVars[idx][7];
-			phaseG_ = 0;
-			phaseB_ = (4.0 * PI /360) * (float)fxIntVars[idx][7];
-			frequencyR_ = (float)fxIntVars[idx][6] / (float)fxIntVars[idx][0];
-			frequencyG_ = (float)fxIntVars[idx][6] / (float)fxIntVars[idx][0];
-			frequencyB_ = (float)fxIntVars[idx][6] / (float)fxIntVars[idx][0];
-			break;
-		}
-		redOff_ = false; grnOff_ = false; bluOff_ = false;
-		break;
-	case 8: //Red/Blue/Magenta (Red 'peak')
-		phaseR_ = 0.0;
-		phaseG_ = 2.0 * PI /3.0;
-		phaseB_ = 4.0 * PI /3.0;
-		frequencyR_ = (float)fxIntVars[idx][6] / (float)fxIntVars[idx][0];
-		frequencyG_ = (float)fxIntVars[idx][6] / (float)fxIntVars[idx][0];
-		frequencyB_ = (float)fxIntVars[idx][6] / (float)fxIntVars[idx][0];
-		redOff_ = false; grnOff_ = true; bluOff_ = false;
-		break;
-	case 9: //Green/Red/Yellow (Green 'peak')
-		phaseR_ = 0.0;
-		phaseG_ = 2.0 * PI /3.0;
-		phaseB_ = 4.0 * PI /3.0;
-		frequencyR_ = (float)fxIntVars[idx][6] / (float)fxIntVars[idx][0];
-		frequencyG_ = (float)fxIntVars[idx][6] / (float)fxIntVars[idx][0];
-		frequencyB_ = (float)fxIntVars[idx][6] / (float)fxIntVars[idx][0];
-		redOff_ = false; grnOff_ = false; bluOff_ = true;
-		break;
-	case 10: //Blue/Green/Cyan (Blue 'peak')
-		phaseR_ = 0.0;
-		phaseG_ = 4.0 * PI /3.0;
-		phaseB_ = 2.0 * PI /3.0;
-		frequencyR_ = (float)fxIntVars[idx][6] / (float)fxIntVars[idx][0];
-		frequencyG_ = (float)fxIntVars[idx][6] / (float)fxIntVars[idx][0];
-		frequencyB_ = (float)fxIntVars[idx][6] / (float)fxIntVars[idx][0];
-		redOff_ = true; grnOff_ = false; bluOff_ = false;
-		break;
-	case 11: //Cyan/Green/Red/Magenta slightly askew (Cyan 'peak')
-		phaseR_ = 0.0;
-		phaseG_ = 2.0 * PI /3.0;
-		phaseB_ = 1.0;
-		frequencyR_ = (float)fxIntVars[idx][6] / (float)fxIntVars[idx][0];
-		frequencyG_ = (float)fxIntVars[idx][6] / (float)fxIntVars[idx][0];
-		frequencyB_ = (float)fxIntVars[idx][6] / (float)fxIntVars[idx][0];
-		redOff_ = false; grnOff_ = false; bluOff_ = false;
-		break;
-	case 12: //Magenta/Green/Blue/Cyan slightly askew (Magenta 'peak')
-		phaseR_ = 1.0;
-		phaseG_ = 0.0;
-		phaseB_ = 2.0 * PI /3.0;
-		frequencyR_ = (float)fxIntVars[idx][6] / (float)fxIntVars[idx][0];
-		frequencyG_ = (float)fxIntVars[idx][6] / (float)fxIntVars[idx][0];
-		frequencyB_ = (float)fxIntVars[idx][6] / (float)fxIntVars[idx][0];
-		redOff_ = false; grnOff_ = false; bluOff_ = false;
-		break;
-	case 13: //Yellow/Blue/Red/Cyan slightly askew (Yellow 'peak')
-		phaseR_ = 2.0 * PI /3.0;
-		phaseG_ = 1.0;
-		phaseB_ = 0.0;
-		frequencyR_ = (float)fxIntVars[idx][6] / (float)fxIntVars[idx][0];
-		frequencyG_ = (float)fxIntVars[idx][6] / (float)fxIntVars[idx][0];
-		frequencyB_ = (float)fxIntVars[idx][6] / (float)fxIntVars[idx][0];
-		redOff_ = false; grnOff_ = false; bluOff_ = false;
-		break;
-	case 14:  //Green/Red/Yellow slightly askew (Green 'peak')
-		phaseR_ = 0.0;
-		phaseG_ = 2.0 * PI /3.0;
-		phaseB_ = 4.0 * PI /3.0;
-		frequencyR_ = (float)fxIntVars[idx][6] / (float)fxIntVars[idx][0];
-		frequencyG_ = (float)fxIntVars[idx][6] / (float)fxIntVars[idx][0];
-		frequencyB_ = 0.0;
-		redOff_ = false; grnOff_ = false; bluOff_ = false;
-		break;
-	case 15:  //Blue/Green/Cyan slightly askew (Blue 'peak')
-		phaseR_ = 4.0 * PI /3.0;
-		phaseG_ = 0.0;
-		phaseB_ = 2.0 * PI /3.0;
-		frequencyR_ = 0.0;
-		frequencyG_ = (float)fxIntVars[idx][6] / (float)fxIntVars[idx][0];
-		frequencyB_ = (float)fxIntVars[idx][6] / (float)fxIntVars[idx][0];
-		redOff_ = false; grnOff_ = false; bluOff_ = false;
-		break;
-	case 16:  //Red/Blue/Magenta slightly askew (Magenta 'peak')
-		phaseR_ = 2.0 * PI /3.0;
-		phaseG_ = 4.0 * PI /3.0;
-		phaseB_ = 0.0;
-		frequencyR_ = (float)fxIntVars[idx][6] / (float)fxIntVars[idx][0];
-		frequencyG_ = 0.0;
-		frequencyB_ = (float)fxIntVars[idx][6] / (float)fxIntVars[idx][0];
-		redOff_ = false; grnOff_ = false; bluOff_ = false;
-		break;
-	default: //nothing - a still pastel rainbow
-		phaseR_ = 2.0 * PI /3.0;
-		phaseG_ = 4.0 * PI /3.0;
-		phaseB_ = 0.0;
-		frequencyR_ = 0.06;
-		frequencyG_ = 0.06;
-		frequencyB_ = 0.06;
-		redOff_ = false; grnOff_ = false; bluOff_ = false;
-		;
-	}
-
 	for(int i=0; i<NUM_PIXELS; i++) {
-		//ToDo: redo sin with pburgess table version  
-		if (redOff_)
-		{
-			r = 0; 
+		if (fxBlnVars[idx][0]) {
+			*ptr++ = 0; 
 		} else {
-			r = sin(frequencyR_*i + phaseR_) * fxIntVars[idx][2] + fxIntVars[idx][1];
+			*ptr++ = int(sin(fxFltVars[idx][0] * i + fxFltVars[idx][3]) * (((float)MAX_LEVEL / 2.0) - 1.0) + ((float)MAX_LEVEL / 2.0));
 		}
-		if (grnOff_)
-		{
-			g = 0;
+		if (fxBlnVars[idx][1]) {
+			*ptr++ = 0;
 		} else {
-			g = sin(frequencyG_*i + phaseG_) * fxIntVars[idx][2] + fxIntVars[idx][1];
+			*ptr++ = int(sin(fxFltVars[idx][1] * i + fxFltVars[idx][4]) * (((float)MAX_LEVEL / 2.0) - 1.0) + ((float)MAX_LEVEL / 2.0));
 		}
-		if (bluOff_)
-		{
-			b = 0;
+		if (fxBlnVars[idx][2]) {
+			*ptr++ = 0;
 		} else {
-			b = sin(frequencyB_*i + phaseB_) * fxIntVars[idx][2] + fxIntVars[idx][1];
+			*ptr++ = int(sin(fxFltVars[idx][2] * i + fxFltVars[idx][5]) * (((float)MAX_LEVEL / 2.0) - 1.0) + ((float)MAX_LEVEL / 2.0));
 		}
-
-		*ptr++ = r; *ptr++ = g; *ptr++ = b;
 	}
 
+	//step up in general
+	fxIntVars[idx][2]++;
 
 	//step in direction
-	if (fxIntVars[idx][3] == 1)
-	{
-		fxIntVars[idx][6]++;
+	if (fxIntVars[idx][3] == 1) {
+		fxIntVars[idx][0]++;
 	} else {
-		fxIntVars[idx][6]--;
-	}
+		fxIntVars[idx][0]--;
+	} 
 
-	//set direction: 1 2 .. 98 .. 400 .. 98 .. 2 1
-	if (fxIntVars[idx][6] == 400)
-	{
+	//set reverse direction: 0 1 2 .. 98 99 .. 399 400 399 .. 99 98 .. 2 1
+	if (fxIntVars[idx][2] == switchHalf) { 
 		fxIntVars[idx][3] = 0;
 	}
-	if (fxIntVars[idx][6] == -1)
-	{
-		fxIntVars[idx][3] = 1;
-		fxIntVars[idx][5]++;
-	}
+	//repeat when finished 0 1 2 .. 799 800 0 1 2 .. 799 800
+	if (fxIntVars[idx][2] == switchFull) {
+		fxIntVars[idx][2] = 0;
+	} 
 
-	fxIntVars[idx][7]++;
-	if (fxIntVars[idx][7] == 800)
-	{
-		fxIntVars[idx][7] = 0;
-	}
+	//set forward direction: 0 1 2 .. 98 99 .. 399 400 399 .. 99 98 .. 2 1
+	//and increment sub-sub-variation counter
+	if (fxIntVars[idx][0] == 0) {
+		fxIntVars[idx][3] = 1;
+		fxIntVars[idx][4]++;
+	} 
 }
 
 
@@ -1157,6 +1273,8 @@ void ProgramPhasing(byte idx) {
 //To Do - see if can use my code to generate non repeating random nos on the fly
 void ProgramRandomStrobe(byte idx) {
 	if(fxInitialised[idx] == false) {
+		lcd.setCursor(0, 0);
+		lcd.print("Random Strobe   ");
 		fxIntVars[idx][0] = 0; // Current position
 		fxIntVars[idx][1] = random(10); // sub pattern / variation
 		fxIntVars[idx][2] = 0; // step through effect
@@ -1317,6 +1435,8 @@ void ProgramRandomStrobe(byte idx) {
 
 void ProgramSimplexNoise(byte idx) {
 	if(fxInitialised[idx] == false) {
+		lcd.setCursor(0, 0);
+		lcd.print("Simplex Noise   ");
 		fxIntVars[idx][0] = random(7); //sub pattern/variation
 		fxFltVars[idx][0] = 0.0; //yOffset
 		fxInitialised[idx] = true; // Effect initialized
@@ -1490,13 +1610,16 @@ void ProgramSimplexNoise(byte idx) {
 //  (more interesting patterns by MEO)
 void ProgramChaser(byte idx) {
 	if(fxInitialised[idx] == false) {
+		lcd.setCursor(0, 0);
+		lcd.print("Chaser          ");
+
 		fxIntVars[idx][0] = 0; //sequence step
 		fxIntVars[idx][1] = random(3); //chaser pattern
-		fxIntVars[idx][2] = 1; //number of pixels in a row with specific color
+		fxIntVars[idx][2] = 5; //number of pixels in a row with specific color
 		fxIntVars[idx][3] = random(1536); //color starting point
 		fxIntVars[idx][4] = 1; //count step
 
-		fxFrameDelay[idx] = 3; //delay frame count
+		fxFrameDelay[idx] = 0; //delay frame count
 		fxFrameDelayCount[idx] = 0; //delay frame
 
 		fxInitialised[idx] = true; // Effect initialized
@@ -1538,6 +1661,8 @@ void ProgramChaser(byte idx) {
 //ToDo: as with strobe fade - fade also moves through rainbow - not too noticable, as only 28 steps - but would be nice to offset
 void ProgramLarsonScanner(byte idx){
 	if(fxInitialised[idx] == false) { // Initialize effect?
+		lcd.setCursor(0, 0);
+		lcd.print("Larson Scanner  ");
 		fxIntVars[idx][0] = NUM_PIXELS; //position - start one loop in, so can count backwards
 		fxIntVars[idx][1] = random(6) * 256; //Colour on color wheel
 
@@ -1610,6 +1735,8 @@ void ProgramLarsonScanner(byte idx){
 //ToDo: as with Larson - fade also moves through rainbow - not too noticable, as only 28 steps - but would be nice to offset
 void ProgramStrobeFade(byte idx){
 	if(fxInitialised[idx] == false) { // Initialize effect?
+		lcd.setCursor(0, 0);
+		lcd.print("Strobe Fade     ");
 		fxIntVars[idx][0] = 0; // eye position
 		fxIntVars[idx][1] = random(3) * 512; //Colour on color wheel
 		// Frame-to-frame hue increment (speed) -- may be positive or negative,
@@ -1663,6 +1790,8 @@ void ProgramStrobeFade(byte idx){
 // Fade in/out a random 20% of bulbs
 void ProgramOldFashioned(byte idx) {
 	if(fxInitialised[idx] == false) {
+		lcd.setCursor(0, 0);
+		lcd.print("Old Fashioned   ");
 		fxIntVars[idx][0] = 20; // Number of bulbs at a time
 		fxIntVars[idx][1] = 600; // Frames to stay at full level
 		fxIntVars[idx][2] = 0; //hue - old colour
@@ -1745,6 +1874,8 @@ void ProgramOldFashioned(byte idx) {
 //				  no gap so colour add up at peak
 void ProgramRotatingCircles(byte idx) {
 	if(fxInitialised[idx] == false) {
+		lcd.setCursor(0, 0);
+		lcd.print("Rotating Circles");
 		fxIntVars[idx][0] = random(1536); // Random hue
 		fxIntVars[idx][1] = (fxIntVars[idx][1] + 768) % 1536; // complementary hue
 		fxIntVars[idx][2] = 0; //frame count
@@ -1781,6 +1912,8 @@ void ProgramRotatingCircles(byte idx) {
 // ToDo: Rainbow - with white shooting in opps direction
 void ProgramRainbowWhite(byte idx) {
 	if(fxInitialised[idx] == false) { // Initialize effect?
+		lcd.setCursor(0, 0);
+		lcd.print("Rainbow White   ");
 		fxIntVars[idx][0] = 0; //white position
 		// Number of repetitions (complete loops around color wheel); any
 		// more than 4 per meter just looks too chaotic and un-rainbow-like.
@@ -1861,6 +1994,8 @@ void ProgramRainbowWhite(byte idx) {
 void ProgramRandomSplash(byte idx){
 	short bulbArray;
 	if(fxInitialised[idx] == false) { // Initialize effect?
+		lcd.setCursor(0, 0);
+		lcd.print("Splash          ");
 		fxIntVars[idx][0] = random(3) * 512; //Colour on color wheel
 		fxIntVars[idx][1] = 0; //add bulb to splash (not yet randomised)
 		fxIntVars[idx][2] = 0; //add frame for the new bulb to splash
@@ -1942,6 +2077,111 @@ void ProgramRandomSplash(byte idx){
 	fxIntVars[idx][4] = splashDelay;
 }
 
+
+//Comet
+// Programmed by MEO from scratch
+//- rainbow fade: (https://www.youtube.com/watch?v=xTkiNIJkWrY   end of http://www.youtube.com/watch?v=9wZhDc0PnWg)
+//  primary/secondary colours from 255 to 0 brightness before next colour
+//  - or, use Hue, and Trail - like commets, one after the other or on their own
+//  - constant stream (like one way larson) - or fill (building up at end) - multicolour options
+void ProgramComet(byte idx){
+	if(fxInitialised[idx] == false) { // Initialize effect?
+		lcd.setCursor(0, 0);
+		lcd.print("Comet           ");
+		fxIntVars[idx][0] = NUM_PIXELS; //position - start one loop in, so can count backwards
+		fxIntVars[idx][1] = random(6) * 256; //Colour on color wheel
+
+		// Frame-to-frame hue increment (speed) -- may be positive or negative,
+		// but magnitude shouldn't be so small as to be boring.  It's generally
+		// still less than a full pixel per frame, making motion very smooth.
+		fxIntVars[idx][2] = 5;//4 + random(fxIntVars[idx][1]) / NUM_PIXELS;  //1 was 4
+		// Reverse speed and hue shift direction half the time.
+		if(random(2) == 0) fxIntVars[idx][1] = -fxIntVars[idx][1];
+		if(random(2) == 0) fxIntVars[idx][2] = -fxIntVars[idx][2];
+		fxIntVars[idx][3] = 0; // Current position
+		fxIntVars[idx][4] = random(4); // full rainbow or one of the lines
+		fxIntVars[idx][5] = random(2); //whether to rainbow, or fixed colour
+
+		fxIntVars[idx][7] = NUM_PIXELS - 1; // this will get decreased by one each comet shoot, for fill version, so gradully fills up
+		
+		fxFrameDelay[idx] = 0; //delay frame count
+		fxFrameDelayCount[idx] = 0; //delay frame
+
+		fxInitialised[idx] = true; //end initialise
+	}
+
+	//ToDo: version where next trail starts straight after fade (i.e. 27 bulbs behind)
+	//		- variation, with multi colours
+
+	byte *ptr = &imgData[idx][0];
+
+	if (fxFrameDelayCount[idx] == fxFrameDelay[idx]) {//only do once every delay frames
+		int color, offset;
+
+		for(int i = 0; i < NUM_PIXELS; i++) {
+			//do backwards trail offset, so brighter overrides dimmer when overlap
+			color = HSVtoRGB(0,0,0,0); //background
+
+			for (offset = 27; offset >= 0; offset--) { // works with GetSmoothFade9, but overkill
+				
+				if (i == GetSimpleOscillatePos(fxIntVars[idx][0] - offset, fxIntVars[idx][7], 0)) {
+					color = HSVtoRGB(fxIntVars[idx][1], 255, GetSmoothFade27(offset), 0);
+				} 
+			}
+
+			//the already previously filled bulbs - these build up (after end point)
+			if (i > fxIntVars[idx][7]) {
+				color = HSVtoRGB(fxIntVars[idx][1], 255, 255, 0);
+			}
+
+/* Larson - 5 x version
+			if (i%50 == GetSimpleOscillatePos(fxIntVars[idx][0] - offset, 19, 19)) {
+				color = HSVtoRGB(fxIntVars[idx][1], 255, GetSmoothFade9(offset), 0);
+			} 
+*/
+
+			*ptr++ = color >> 16; *ptr++ = color >> 8; *ptr++ = color;
+
+
+
+
+
+
+
+		}
+
+		//for rainbow version - move through rainbow
+		fxIntVars[idx][3] += fxIntVars[idx][2];
+
+		//increase oscillate step
+		fxIntVars[idx][0]++;
+
+
+		//for 'fill' version
+		if (fxIntVars[idx][0] % fxIntVars[idx][7] == 0) {
+			fxIntVars[idx][0] = 0;
+			Serial.print(fxIntVars[idx][0]); Serial.print(" : "); Serial.println(fxIntVars[idx][7]);
+			
+			//reduce end point each time
+			fxIntVars[idx][7]--;
+
+			if (fxIntVars[idx][7] == 0) { //reset
+				fxIntVars[idx][7] = NUM_PIXELS - 1;
+				fxIntVars[idx][1] = (fxIntVars[idx][1] + 256 ) % 1536;
+			}
+		}
+
+
+
+
+		fxFrameDelayCount[idx] = 0;
+	} else {
+		fxFrameDelayCount[idx]++;
+	}
+
+
+
+}
 
 // ---------------------------------------------------------------------------
 // Alpha channel effect rendering functions.  Like the image rendering
@@ -2409,8 +2649,8 @@ int GetSplash(int bulbOut, int frameOut, int bulbStart, int frameStart, float ve
 
 //Chaser support functions
 
-void FillChaserSeq(uint8_t count, uint16_t sequence, uint8_t span_size, int startColor, 
-						   int (*sequence_func)(uint16_t sequence, int startColor), byte idx)
+void FillChaserSeq(int count, int sequence, int span_size, int startColor, 
+						   int (*sequence_func)(int sequence, int startColor), byte idx)
 {
 	//begin, count, sequence, span, func, idx)
 	while (count--)
@@ -2419,7 +2659,7 @@ void FillChaserSeq(uint8_t count, uint16_t sequence, uint8_t span_size, int star
 	}
 }
 
-void SetChaserColor(uint8_t bulb, int color, byte idx)
+void SetChaserColor(int bulb, int color, byte idx)
 {
 	byte *ptr = &imgData[idx][0];
 	for (int i=0; i<NUM_PIXELS; i++) 
@@ -2434,7 +2674,7 @@ void SetChaserColor(uint8_t bulb, int color, byte idx)
 } 
 
 //Chaser patterns
-int ChaseRGB(uint16_t sequence, int startColor)
+int ChaseRGB(int sequence, int startColor)
 {
     sequence = sequence % 3;
     if (sequence == 0)
@@ -2448,9 +2688,9 @@ int ChaseRGB(uint16_t sequence, int startColor)
     return (HSVtoRGB(1024, 255, 255, 0));
 } 
 
-int ChaseRotateCompliment(uint16_t sequence, int startColor)
+int ChaseRotateCompliment(int sequence, int startColor)
 {
-	uint16_t positionP, positionC;
+	int positionP, positionC;
 	positionP = (startColor + sequence) % 1536;
 	positionC = (startColor + sequence + 768) % 1536; // + 768 = 180 degrees
     sequence = sequence % 5;
@@ -2462,9 +2702,9 @@ int ChaseRotateCompliment(uint16_t sequence, int startColor)
     }
 }
 
-int ChaseRotateAnalogic45(uint16_t sequence, int startColor)
+int ChaseRotateAnalogic45(int sequence, int startColor)
 {
-	uint16_t positionP1, positionP2, positionP3;
+	int positionP1, positionP2, positionP3;
 	positionP1 = (startColor + sequence) % 1536;
 	positionP2 = (startColor + sequence + 192) % 1536; // + 192 = 45 degrees
 	positionP3 = (startColor + sequence +1344) % 1536; // -192 = -45 degrees (added 1344 is equiv)
@@ -2480,9 +2720,9 @@ int ChaseRotateAnalogic45(uint16_t sequence, int startColor)
 	return (HSVtoRGB(positionP1, 255, 255, 0)); //45 degrees clockwise
 }
 
-int ChaseRotateAccentedAnalogic30(uint16_t sequence, int startColor)
+int ChaseRotateAccentedAnalogic30(int sequence, int startColor)
 {
-	uint16_t positionP1, positionP2, positionP3, positionC;
+	int positionP1, positionP2, positionP3, positionC;
 	positionP1 = (startColor + sequence) % 1536;
 	positionP2 = (startColor + sequence + 128) % 1536; // + 128 = 30 degrees
 	positionP3 = (startColor + sequence + 1280) % 1536; // -128 = -30 degrees (added 1280 is equiv)
