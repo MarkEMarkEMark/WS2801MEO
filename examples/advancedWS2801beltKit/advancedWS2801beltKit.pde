@@ -16,6 +16,47 @@ Programmed for the Due - so 100+ bulbs and fast frame rates now possible! */
 
 /* ToDo: Patterns Ideas
 
+- hopefully a quickie: random no is also bulb level (* 2.5), then shift by 1 to loop
+	(also work out how to do this with fade, i.e. random no is 0-50 fade up (*5) / 51-99  250-(-50 * 5) fade down 
+	 random no represents starting point e.g. 1st 3 bulbs:
+				21	98	66	->	(21*5) 105    (98-50 * 5) 250-240=10	(66-50 * 5) 250-80=170
+				22  99  67
+				23  00  68
+				24  01  69
+
+Comic Relief studio display:
+	- fade up bars:
+		FEDCB    A9876    54321    12345    6789A    BCDEF
+		FEDC   BA987    65432       23456    789AB    CDEF
+		FED   CBA98    76543         34567    89ABC    DEF
+		.
+		.
+		or
+		FFFFF     99999     55555     111111     55555
+		FFFF     AAAAA     66666
+
+	- stars
+		- find sparkle argorithm (random velocity of fade up/down)
+		- apply to random bulbs
+
+Local cafe St. Albans by park
+	- old fashioned alternate fade up/down - down/up
+
+Random colour line grows (alternate forward / backward, but different lengths)
+
+---------------->
+     <-----------
+     ------->
+  <----------
+  ---------------->
+
+Similar, but grow either side, from random place (multiple at any one time)
+
+  <-------->	<------>
+	<------>	   <--->
+<------>     <-------->  <-------->
+
+
 - various from: https://www.youtube.com/watch?v=zMKf98MpaUg / http://www.youtube.com/watch?v=w557LuVueXg&feature=player_embedded
 
 - flames (flag?? R/Y)
@@ -83,7 +124,7 @@ some future expansion if I'm ever foolish enough to attempt that. */
 
 #include "SPI.h"
 #include "DriverWS2801.h"
-#include "ARMtimer.h"
+#include "DueTimer.h"
 #include "Keypad.h"
 #include "LiquidCrystal.h"
 
@@ -221,16 +262,16 @@ void (*renderEffect[])(byte) = {
 			//ProgramPulse,
 			//ProgramPhasing,
 			//ProgramSimplexNoise,
-			//ProgramRandomStrobe,
+			ProgramRandomStrobe,
 			//ProgramFlames,
-			//ProgramChaser,
-			//ProgramLarsonScanner,
+			ProgramChaser,
+			ProgramLarsonScanner,
 			//ProgramOldFashioned,
-			//ProgramRotatingCircles,
-			//ProgramRainbowWhite,
-			//ProgramRandomSplash,
-			//ProgramStrobeFade,
-			ProgramComet},
+			ProgramRotatingCircles,
+			ProgramRainbowWhite,
+			ProgramRandomSplash,
+			ProgramStrobeFade},
+			//ProgramComet},
 	  (*renderAlpha[])(void) = {
 			//crossfadeDither,
 			//crossfadeWipe,
@@ -242,8 +283,8 @@ void setup() {
 	// set up the LCD's number of columns and rows: 
 	lcd.begin(16,2);
 
-	startTimer(TC1, 0, TC3_IRQn, 61, LightFrame);  //61/67 are primes, so should never be a same time
-    //startTimer(TC0, 0, TC0_IRQn, 67, CheckSwitches);
+	startTimer1(61, LightFrame);  //61/67 are primes, so should never be a same time
+    //startTimer2(67, CheckSwitches);
 
 	// Open serial communications and wait for port to open:
 	Serial.begin(115200);
